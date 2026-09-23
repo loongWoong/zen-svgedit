@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<style>
+  .font{font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif;}
+  .title{font-size:54px;font-weight:700;fill:#0b3b82}
+  .subtitle{font-size:24px;fill:#52657a}
+  .h2{font-size:30px;font-weight:700;fill:#0b3b82}
+  .body{font-size:22px;fill:#24364b}
+  .small{font-size:19px;fill:#52657a}
+  .tiny{font-size:17px;fill:#63758a}
+  .white{fill:#fff}
+  .blue{fill:#1769e0}
+  .navy{fill:#0b3b82}
+  .teal{fill:#14a3a2}
+  .green{fill:#24a148}
+  .orange{fill:#f39c22}
+  .purple{fill:#7656d6}
+  .muted{fill:#edf4fb}
+  .line{stroke:#bad0e9;stroke-width:2}
+  .arrow{stroke:#5b8fd8;stroke-width:5;fill:none;marker-end:url(#arrow)}
+  .soft{filter:url(#shadow)}
+</style>
+<defs>
+ <linearGradient id="gBlue" x1="0" x2="1"><stop offset="0" stop-color="#0e65d8"/><stop offset="1" stop-color="#2aa5f5"/></linearGradient>
+ <linearGradient id="gTeal" x1="0" x2="1"><stop offset="0" stop-color="#10a9a6"/><stop offset="1" stop-color="#46c9b0"/></linearGradient>
+ <linearGradient id="gPurple" x1="0" x2="1"><stop offset="0" stop-color="#6e4fd3"/><stop offset="1" stop-color="#9a73ef"/></linearGradient>
+ <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1d4f8f" flood-opacity="0.10"/></filter>
+ <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 Z" fill="#5b8fd8"/></marker>
+</defs>
+<rect width="1920" height="1080" fill="#f7fbff"/>
+<rect x="54" y="52" width="10" height="76" rx="5" fill="#1769e0"/>
+<text x="90" y="98" class="font title">知识如何长出来？——从业务事实到持续演化的知识资产</text>
+<text x="90" y="142" class="font subtitle">数据提供土壤，业务事实提供依据，语义模型负责组织，业务验证决定取舍，AI应用和业务反馈推动下一轮沉淀。</text>
+
+<!-- linear growth -->
+<rect x="75" y="200" width="1770" height="320" rx="26" fill="#fff" stroke="#cfe1f5" stroke-width="2" class="soft"/>
+<text x="110" y="248" class="font h2">知识不是一次设计完成，而是在真实业务中持续长出来</text>
+<text x="110" y="283" class="font small">从业务事实出发，经过语义组织、模型候选、业务验证，最终沉淀为可复用的知识资产。</text>
+
+<g class="font">
+ <rect x="110" y="330" width="185" height="125" rx="20" fill="#edf6ff"/><text x="202" y="368" class="h2" text-anchor="middle">真实业务</text><text x="202" y="404" class="small" text-anchor="middle">场景 / 流程 / 业务目标</text>
+ <rect x="340" y="330" width="185" height="125" rx="20" fill="#eef7ff"/><text x="432" y="368" class="h2" text-anchor="middle">业务数据</text><text x="432" y="404" class="small" text-anchor="middle">系统 / 设备 / 文档 / 接口</text>
+ <rect x="570" y="330" width="185" height="125" rx="20" fill="#eefbf9"/><text x="662" y="368" class="h2" text-anchor="middle">业务事实</text><text x="662" y="404" class="small" text-anchor="middle">发生了什么</text>
+ <rect x="800" y="330" width="185" height="125" rx="20" fill="#f6f0ff"/><text x="892" y="368" class="h2" text-anchor="middle">业务语义</text><text x="892" y="404" class="small" text-anchor="middle">对象 / 关系 / 状态 / 上下文</text>
+ <rect x="1030" y="330" width="185" height="125" rx="20" fill="#fff6e9"/><text x="1122" y="368" class="h2" text-anchor="middle">候选模型</text><text x="1122" y="404" class="small" text-anchor="middle">本体 / 规则 / 逻辑</text>
+ <rect x="1260" y="330" width="185" height="125" rx="20" fill="#eefbf9"/><text x="1352" y="368" class="h2" text-anchor="middle">业务验证</text><text x="1352" y="404" class="small" text-anchor="middle">真实场景是否可表达</text>
+ <rect x="1490" y="330" width="185" height="125" rx="20" fill="#eaf5ff"/><text x="1582" y="368" class="h2" text-anchor="middle">知识资产</text><text x="1582" y="404" class="small" text-anchor="middle">模型 / 规则 / 案例 / 经验</text>
+ <rect x="1720" y="330" width="90" height="125" rx="20" fill="#eaf9ee"/><text x="1765" y="368" class="h2" text-anchor="middle">持续</text><text x="1765" y="402" class="small" text-anchor="middle">沉淀</text>
+</g>
+<g stroke="#5b8fd8" stroke-width="4" fill="none" marker-end="url(#arrow)">
+ <path d="M295 392 H332"/><path d="M525 392 H562"/><path d="M755 392 H792"/><path d="M985 392 H1022"/><path d="M1215 392 H1252"/><path d="M1445 392 H1482"/><path d="M1675 392 H1712"/>
+</g>
+
+<!-- flywheel -->
+<rect x="75" y="565" width="1770" height="360" rx="28" fill="#f1f7fd" stroke="#d3e5f6"/>
+<text x="110" y="615" class="font h2">持续成长飞轮：业务运行本身，就是知识中台的“训练场”</text>
+
+<g class="font">
+ <circle cx="320" cy="760" r="82" fill="#1769e0"/><text x="320" y="752" class="font white" text-anchor="middle" font-size="30" font-weight="700">数据</text><text x="320" y="786" class="font white" text-anchor="middle" font-size="18">汇聚事实</text>
+ <circle cx="600" cy="760" r="82" fill="#14a3a2"/><text x="600" y="752" class="font white" text-anchor="middle" font-size="30" font-weight="700">业务运行</text><text x="600" y="786" class="font white" text-anchor="middle" font-size="18">产生场景</text>
+ <circle cx="880" cy="760" r="82" fill="#7656d6"/><text x="880" y="752" class="font white" text-anchor="middle" font-size="30" font-weight="700">知识沉淀</text><text x="880" y="786" class="font white" text-anchor="middle" font-size="18">形成模型与规则</text>
+ <circle cx="1160" cy="760" r="82" fill="#f39c22"/><text x="1160" y="752" class="font white" text-anchor="middle" font-size="30" font-weight="700">AI应用</text><text x="1160" y="786" class="font white" text-anchor="middle" font-size="18">分析 / 推理 / 决策</text>
+ <circle cx="1440" cy="760" r="82" fill="#24a148"/><text x="1440" y="752" class="font white" text-anchor="middle" font-size="30" font-weight="700">业务反馈</text><text x="1440" y="786" class="font white" text-anchor="middle" font-size="18">新事实 / 新规则 / 新经验</text>
+</g>
+<g stroke="#5b8fd8" stroke-width="5" fill="none" marker-end="url(#arrow)">
+ <path d="M404 760 H510"/><path d="M684 760 H790"/><path d="M964 760 H1070"/><path d="M1244 760 H1350"/>
+ <path d="M1440 848 C1200 930 560 930 320 845"/>
+</g>
+<rect x="730" y="600" width="420" height="54" rx="27" fill="#0b3b82"/><text x="940" y="636" class="font white" text-anchor="middle" font-size="22" font-weight="700">数据 × 业务 × 知识 × AI = 持续进化</text>
+
+<rect x="465" y="955" width="990" height="66" rx="33" fill="#0b3b82"/>
+<text x="960" y="997" class="font white" text-anchor="middle" font-size="24" font-weight="700">知识不是“专家一次性画出来”的，而是被真实业务不断验证、修正和复用的企业资产。</text>
+
+<text x="1790" y="1012" class="font tiny" text-anchor="end">中创股份 · AI时代企业数据与知识双底座建设实践</text>
+</svg>

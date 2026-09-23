@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<style>
+  .font{font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif;}
+  .title{font-size:54px;font-weight:700;fill:#0b3b82}
+  .subtitle{font-size:24px;fill:#52657a}
+  .h2{font-size:30px;font-weight:700;fill:#0b3b82}
+  .body{font-size:22px;fill:#24364b}
+  .small{font-size:19px;fill:#52657a}
+  .tiny{font-size:17px;fill:#63758a}
+  .white{fill:#fff}
+  .blue{fill:#1769e0}
+  .navy{fill:#0b3b82}
+  .teal{fill:#14a3a2}
+  .green{fill:#24a148}
+  .orange{fill:#f39c22}
+  .purple{fill:#7656d6}
+  .muted{fill:#edf4fb}
+  .line{stroke:#bad0e9;stroke-width:2}
+  .arrow{stroke:#5b8fd8;stroke-width:5;fill:none;marker-end:url(#arrow)}
+  .soft{filter:url(#shadow)}
+</style>
+<defs>
+ <linearGradient id="gBlue" x1="0" x2="1"><stop offset="0" stop-color="#0e65d8"/><stop offset="1" stop-color="#2aa5f5"/></linearGradient>
+ <linearGradient id="gTeal" x1="0" x2="1"><stop offset="0" stop-color="#10a9a6"/><stop offset="1" stop-color="#46c9b0"/></linearGradient>
+ <linearGradient id="gPurple" x1="0" x2="1"><stop offset="0" stop-color="#6e4fd3"/><stop offset="1" stop-color="#9a73ef"/></linearGradient>
+ <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1d4f8f" flood-opacity="0.10"/></filter>
+ <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 Z" fill="#5b8fd8"/></marker>
+</defs>
+<rect width="1920" height="1080" fill="#f7fbff"/>
+<rect x="54" y="52" width="10" height="76" rx="5" fill="#1769e0"/>
+<text x="90" y="98" class="font title">制造型企业 AI 数据建设建议——先建“业务可理解的数据”</text>
+<text x="90" y="142" class="font subtitle">以数据为基础、知识为核心、AI为引擎；从一个真实业务链切入，逐步形成数据—知识—AI—业务的闭环。</text>
+
+<rect x="75" y="195" width="1770" height="250" rx="28" fill="#fff" stroke="#cfe1f5" stroke-width="2" class="soft"/>
+<text x="110" y="242" class="font h2">制造业 AI 在数据领域，先把“业务可理解的数据”建起来</text>
+<text x="110" y="278" class="font small">不是先上大模型，而是把设备、产品、订单、物料、质量、工艺等数据组织成 AI 能理解和调用的业务事实。</text>
+
+<!-- five foundations -->
+<g class="font">
+ <rect x="110" y="315" width="320" height="95" rx="18" fill="#edf6ff"/><text x="135" y="350" class="h2">01 主数据统一</text><text x="135" y="382" class="small">设备 / 产品 / 物料 / 客户 / 订单</text>
+ <rect x="455" y="315" width="320" height="95" rx="18" fill="#eefbf9"/><text x="480" y="350" class="h2">02 业务事件统一</text><text x="480" y="382" class="small">生产 / 质检 / 维修 / 换线 / 停机</text>
+ <rect x="800" y="315" width="320" height="95" rx="18" fill="#f6efff"/><text x="825" y="350" class="h2">03 上下文关联</text><text x="825" y="382" class="small">设备 ↔ 工单 ↔ 产品 ↔ 批次 ↔ 工艺</text>
+ <rect x="1145" y="315" width="320" height="95" rx="18" fill="#fff7ea"/><text x="1170" y="350" class="h2">04 质量与血缘</text><text x="1170" y="382" class="small">来源 / 时间 / 质量 / 权限 / 可追溯</text>
+ <rect x="1490" y="315" width="320" height="95" rx="18" fill="#edf8ee"/><text x="1515" y="350" class="h2">05 语义映射</text><text x="1515" y="382" class="small">表 / 字段 → 对象 / 属性 / 关系</text>
+</g>
+
+<!-- middle loop -->
+<rect x="75" y="480" width="1770" height="360" rx="28" fill="#f2f7fc" stroke="#d0e0ef"/>
+<text x="110" y="528" class="font h2">优先选择一个真实业务闭环，而不是建设“大而全”的知识图谱</text>
+
+<g class="font">
+ <rect x="110" y="585" width="245" height="150" rx="20" fill="#1769e0"/><text x="232" y="638" class="font white" text-anchor="middle" font-size="30" font-weight="700">设备数据</text><text x="232" y="676" class="font white" text-anchor="middle" font-size="18">传感器 / PLC / 日志</text><text x="232" y="706" class="font white" text-anchor="middle" font-size="18">状态 / 振动 / 温度</text>
+ <rect x="445" y="585" width="245" height="150" rx="20" fill="#14a3a2"/><text x="567" y="638" class="font white" text-anchor="middle" font-size="30" font-weight="700">设备对象</text><text x="567" y="676" class="font white" text-anchor="middle" font-size="18">设备 / 部件 / 工位</text><text x="567" y="706" class="font white" text-anchor="middle" font-size="18">统一身份与业务关系</text>
+ <rect x="780" y="585" width="245" height="150" rx="20" fill="#7656d6"/><text x="902" y="638" class="font white" text-anchor="middle" font-size="30" font-weight="700">异常事件</text><text x="902" y="676" class="font white" text-anchor="middle" font-size="18">异常识别 / 影响范围</text><text x="902" y="706" class="font white" text-anchor="middle" font-size="18">关联工单与生产上下文</text>
+ <rect x="1115" y="585" width="245" height="150" rx="20" fill="#f39c22"/><text x="1237" y="638" class="font white" text-anchor="middle" font-size="30" font-weight="700">维修知识</text><text x="1237" y="676" class="font white" text-anchor="middle" font-size="18">规则 / 案例 / 处置经验</text><text x="1237" y="706" class="font white" text-anchor="middle" font-size="18">形成可复用知识资产</text>
+ <rect x="1450" y="585" width="320" height="150" rx="20" fill="#24a148"/><text x="1610" y="638" class="font white" text-anchor="middle" font-size="30" font-weight="700">AI 诊断与行动</text><text x="1610" y="676" class="font white" text-anchor="middle" font-size="18">根因分析 / 建议 / 工单</text><text x="1610" y="706" class="font white" text-anchor="middle" font-size="18">结果反馈 → 新知识沉淀</text>
+</g>
+<g stroke="#5b8fd8" stroke-width="5" fill="none" marker-end="url(#arrow)">
+ <path d="M355 660 H435"/><path d="M690 660 H770"/><path d="M1025 660 H1105"/><path d="M1360 660 H1440"/>
+</g>
+
+<!-- roadmap -->
+<rect x="75" y="875" width="1770" height="130" rx="26" fill="#0b3b82"/>
+<text x="110" y="922" class="font white" font-size="28" font-weight="700">制造业建议路线：</text>
+<text x="420" y="922" class="font white" font-size="25">① 数据治理：可信</text>
+<text x="760" y="922" class="font white" font-size="25">→ ② 数据资产：可用</text>
+<text x="1115" y="922" class="font white" font-size="25">→ ③ 知识体系：可理解</text>
+<text x="1500" y="922" class="font white" font-size="25">→ AI应用：可执行</text>
+<text x="110" y="967" class="font" font-size="21" fill="#cce4ff">先跑通一个闭环，再复制到质量、生产、供应链、设备运维等更多场景；双底座一体化规划、同步建设。</text>
+
+<text x="1790" y="1012" class="font tiny" text-anchor="end">中创股份 · AI时代企业数据与知识双底座建设实践</text>
+</svg>

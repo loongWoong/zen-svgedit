@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<style>
+  .font{font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif;}
+  .title{font-size:54px;font-weight:700;fill:#0b3b82}
+  .subtitle{font-size:24px;fill:#52657a}
+  .h2{font-size:30px;font-weight:700;fill:#0b3b82}
+  .body{font-size:22px;fill:#24364b}
+  .small{font-size:19px;fill:#52657a}
+  .tiny{font-size:17px;fill:#63758a}
+  .white{fill:#fff}
+  .blue{fill:#1769e0}
+  .navy{fill:#0b3b82}
+  .teal{fill:#14a3a2}
+  .green{fill:#24a148}
+  .orange{fill:#f39c22}
+  .purple{fill:#7656d6}
+  .muted{fill:#edf4fb}
+  .line{stroke:#bad0e9;stroke-width:2}
+  .arrow{stroke:#5b8fd8;stroke-width:5;fill:none;marker-end:url(#arrow)}
+  .soft{filter:url(#shadow)}
+</style>
+<defs>
+ <linearGradient id="gBlue" x1="0" x2="1"><stop offset="0" stop-color="#0e65d8"/><stop offset="1" stop-color="#2aa5f5"/></linearGradient>
+ <linearGradient id="gTeal" x1="0" x2="1"><stop offset="0" stop-color="#10a9a6"/><stop offset="1" stop-color="#46c9b0"/></linearGradient>
+ <linearGradient id="gPurple" x1="0" x2="1"><stop offset="0" stop-color="#6e4fd3"/><stop offset="1" stop-color="#9a73ef"/></linearGradient>
+ <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1d4f8f" flood-opacity="0.10"/></filter>
+ <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 Z" fill="#5b8fd8"/></marker>
+</defs>
+<rect width="1920" height="1080" fill="#f7fbff"/>
+<rect x="54" y="52" width="10" height="76" rx="5" fill="#1769e0"/>
+<text x="90" y="98" class="font title">高速案例：从“价值描述”到“可验证证据”</text>
+<text x="90" y="142" class="font subtitle">把“效率提升、精准高效、可解释”落到真实可观察的流程变化上，更适合现场交流与客户验收。</text>
+
+<rect x="75" y="200" width="1770" height="300" rx="28" fill="#fff" stroke="#cfe1f5" stroke-width="2" class="soft"/>
+<text x="110" y="248" class="font h2">高速案例：把“价值”从一句话变成可以现场验证的过程指标</text>
+<text x="110" y="284" class="font small">正式汇报不建议虚构提升百分比；优先用“时间、步骤、系统数量、可追溯性”呈现客观变化，真实数据可在现场补入。</text>
+
+<g class="font">
+ <rect x="110" y="330" width="380" height="120" rx="20" fill="#eef6ff"/>
+ <text x="135" y="368" class="h2">① 分析时间</text><text x="135" y="402" class="small">原来：人工查报表、跨系统核对</text><text x="135" y="428" class="small">现在：自然语言问题 → 自动分析链路</text>
+ <rect x="525" y="330" width="380" height="120" rx="20" fill="#eefbf9"/>
+ <text x="550" y="368" class="h2">② 分析步骤</text><text x="550" y="402" class="small">原来：筛选 → 判断 → 定位 → 解释</text><text x="550" y="428" class="small">现在：语义理解 → 查询 → 推理 → 结论</text>
+ <rect x="940" y="330" width="380" height="120" rx="20" fill="#fff7ea"/>
+ <text x="965" y="368" class="h2">③ 数据范围</text><text x="965" y="402" class="small">原来：依赖人员记忆、逐表检索</text><text x="965" y="428" class="small">现在：一次关联车辆、通行、门架、交易、清分</text>
+ <rect x="1355" y="330" width="435" height="120" rx="20" fill="#f6efff"/>
+ <text x="1380" y="368" class="h2">④ 解释与追溯</text><text x="1380" y="402" class="small">原来：人工整理原因</text><text x="1380" y="428" class="small">现在：结论 + 证据 + 规则 + 影响范围可追溯</text>
+</g>
+
+<!-- before/after evidence -->
+<rect x="75" y="530" width="840" height="360" rx="26" fill="#f8fbfe" stroke="#d6e4f2"/>
+<text x="110" y="580" class="font h2">以前：经验驱动</text>
+<g class="font body">
+ <text x="120" y="630">报表查询</text><text x="120" y="680">↓</text><text x="120" y="720">人工筛选异常记录</text><text x="120" y="770">↓</text><text x="120" y="810">跨系统核对 / 人工定位</text><text x="120" y="860">↓</text>
+ <text x="420" y="630">人工判断原因</text><text x="420" y="680">↓</text><text x="420" y="720">人工整理结论</text>
+</g>
+<rect x="575" y="625" width="280" height="205" rx="18" fill="#fff" stroke="#d6e4f2"/>
+<text x="715" y="665" class="font small" text-anchor="middle">典型可观察现象</text>
+<text x="605" y="705" class="font body">需要多个系统</text>
+<text x="605" y="745" class="font body">依赖个人经验</text>
+<text x="605" y="785" class="font body">定位和解释难复用</text>
+
+<rect x="1005" y="530" width="840" height="360" rx="26" fill="#f4fbf9" stroke="#bde5df"/>
+<text x="1040" y="580" class="font h2">现在：数据 + 知识驱动</text>
+<g class="font body">
+ <rect x="1040" y="620" width="690" height="55" rx="14" fill="#fff"/><text x="1065" y="656">自然语言问题 → 本体识别业务对象</text>
+ <rect x="1040" y="690" width="690" height="55" rx="14" fill="#fff"/><text x="1065" y="726">多源数据关联 → 门架 / 交易 / 清分结果</text>
+ <rect x="1040" y="760" width="690" height="55" rx="14" fill="#fff"/><text x="1065" y="796">规则校验 → 异常诊断 → 证据链</text>
+ <rect x="1040" y="830" width="690" height="55" rx="14" fill="#fff"/><text x="1065" y="866">业务结论 → 影响评估 → 处理建议</text>
+</g>
+<circle cx="1770" cy="650" r="38" fill="#24a148"/><text x="1770" y="658" class="font white" text-anchor="middle" font-size="25" font-weight="700">✓</text>
+<circle cx="1770" cy="720" r="38" fill="#24a148"/><text x="1770" y="728" class="font white" text-anchor="middle" font-size="25" font-weight="700">✓</text>
+<circle cx="1770" cy="790" r="38" fill="#24a148"/><text x="1770" y="798" class="font white" text-anchor="middle" font-size="25" font-weight="700">✓</text>
+<circle cx="1770" cy="860" r="38" fill="#24a148"/><text x="1770" y="868" class="font white" text-anchor="middle" font-size="25" font-weight="700">✓</text>
+
+<rect x="415" y="930" width="1090" height="62" rx="31" fill="#0b3b82"/>
+<text x="960" y="970" class="font white" text-anchor="middle" font-size="23" font-weight="700">价值不是“AI变聪明了”，而是业务分析链路更短、依据更清楚、结果更可追溯、经验更容易复用。</text>
+
+<text x="1790" y="1012" class="font tiny" text-anchor="end">中创股份 · AI时代企业数据与知识双底座建设实践</text>
+</svg>

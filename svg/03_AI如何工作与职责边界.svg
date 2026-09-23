@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<style>
+  .font{font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif;}
+  .title{font-size:54px;font-weight:700;fill:#0b3b82}
+  .subtitle{font-size:24px;fill:#52657a}
+  .h2{font-size:30px;font-weight:700;fill:#0b3b82}
+  .body{font-size:22px;fill:#24364b}
+  .small{font-size:19px;fill:#52657a}
+  .tiny{font-size:17px;fill:#63758a}
+  .white{fill:#fff}
+  .blue{fill:#1769e0}
+  .navy{fill:#0b3b82}
+  .teal{fill:#14a3a2}
+  .green{fill:#24a148}
+  .orange{fill:#f39c22}
+  .purple{fill:#7656d6}
+  .muted{fill:#edf4fb}
+  .line{stroke:#bad0e9;stroke-width:2}
+  .arrow{stroke:#5b8fd8;stroke-width:5;fill:none;marker-end:url(#arrow)}
+  .soft{filter:url(#shadow)}
+</style>
+<defs>
+ <linearGradient id="gBlue" x1="0" x2="1"><stop offset="0" stop-color="#0e65d8"/><stop offset="1" stop-color="#2aa5f5"/></linearGradient>
+ <linearGradient id="gTeal" x1="0" x2="1"><stop offset="0" stop-color="#10a9a6"/><stop offset="1" stop-color="#46c9b0"/></linearGradient>
+ <linearGradient id="gPurple" x1="0" x2="1"><stop offset="0" stop-color="#6e4fd3"/><stop offset="1" stop-color="#9a73ef"/></linearGradient>
+ <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1d4f8f" flood-opacity="0.10"/></filter>
+ <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 Z" fill="#5b8fd8"/></marker>
+</defs>
+<rect width="1920" height="1080" fill="#f7fbff"/>
+<rect x="54" y="52" width="10" height="76" rx="5" fill="#1769e0"/>
+<text x="90" y="98" class="font title">AI到底怎么工作？——业务语义驱动的智能分析与决策</text>
+<text x="90" y="142" class="font subtitle">AI不是简单的“自然语言 → SQL”，而是“理解业务 → 调用知识与数据 → 规则推理 → 输出可解释结论 → 触发业务行动”。</text>
+
+<!-- pipeline -->
+<rect x="75" y="195" width="1770" height="205" rx="26" fill="#fff" stroke="#cfe1f5" stroke-width="2" class="soft"/>
+<text x="110" y="240" class="font h2">一个问题，经过谁、做什么，最后为什么能得到可信结论？</text>
+
+<g class="font">
+ <rect x="110" y="275" width="245" height="90" rx="18" fill="#eaf4ff"/><text x="232" y="315" class="h2" text-anchor="middle">用户问题</text><text x="232" y="346" class="small" text-anchor="middle">自然语言：为什么异常？</text>
+ <rect x="415" y="275" width="245" height="90" rx="18" fill="#eafbf9"/><text x="537" y="315" class="h2" text-anchor="middle">大模型</text><text x="537" y="346" class="small" text-anchor="middle">理解意图 / 提取条件 / 编排任务</text>
+ <rect x="720" y="275" width="245" height="90" rx="18" fill="#f6efff"/><text x="842" y="315" class="h2" text-anchor="middle">本体语义</text><text x="842" y="346" class="small" text-anchor="middle">识别对象 / 关系 / 业务上下文</text>
+ <rect x="1025" y="275" width="245" height="90" rx="18" fill="#eef7ff"/><text x="1147" y="315" class="h2" text-anchor="middle">数据与规则</text><text x="1147" y="346" class="small" text-anchor="middle">查询 / 计算 / 校验 / 推理</text>
+ <rect x="1330" y="275" width="245" height="90" rx="18" fill="#fff7ea"/><text x="1452" y="315" class="h2" text-anchor="middle">业务结论</text><text x="1452" y="346" class="small" text-anchor="middle">原因 / 影响 / 建议 / 证据</text>
+ <rect x="1635" y="275" width="165" height="90" rx="18" fill="#eaf8ee"/><text x="1718" y="315" class="h2" text-anchor="middle">行动</text><text x="1718" y="346" class="small" text-anchor="middle">执行 / 反馈</text>
+</g>
+<g stroke="#5b8fd8" stroke-width="5" fill="none" marker-end="url(#arrow)">
+ <path d="M355 320 H405"/><path d="M660 320 H710"/><path d="M965 320 H1015"/><path d="M1270 320 H1320"/><path d="M1575 320 H1625"/>
+</g>
+
+<!-- role separation -->
+<rect x="75" y="435" width="1770" height="500" rx="28" fill="#f2f7fc" stroke="#d0e0ef"/>
+<text x="110" y="482" class="font h2">职责边界：不是“大模型一个人做完”，而是不同能力协同完成业务分析</text>
+
+<!-- lanes -->
+<rect x="110" y="525" width="1620" height="78" rx="16" fill="#fff"/>
+<rect x="110" y="525" width="235" height="78" rx="16" fill="#1769e0"/><text x="228" y="576" class="font white" text-anchor="middle" font-size="26" font-weight="700">大模型 / Agent</text>
+<text x="380" y="558" class="font body">理解自然语言、识别意图、拆解任务、选择能力、组织结果</text><text x="380" y="586" class="font tiny">不是业务事实的唯一来源，也不应凭空发明企业规则。</text>
+
+<rect x="110" y="620" width="1620" height="78" rx="16" fill="#fff"/>
+<rect x="110" y="620" width="235" height="78" rx="16" fill="#7656d6"/><text x="228" y="671" class="font white" text-anchor="middle" font-size="26" font-weight="700">本体语义层</text>
+<text x="380" y="653" class="font body">提供企业统一业务对象、关系、状态和上下文，让AI知道“业务上是什么”。</text><text x="380" y="681" class="font tiny">把“API调用”提升为“业务对象与能力调用”。</text>
+
+<rect x="110" y="715" width="1620" height="78" rx="16" fill="#fff"/>
+<rect x="110" y="715" width="235" height="78" rx="16" fill="#14a3a2"/><text x="228" y="766" class="font white" text-anchor="middle" font-size="26" font-weight="700">数据底座</text>
+<text x="380" y="748" class="font body">提供真实业务事实：交易、生产、设备、质量、库存、轨迹等。</text><text x="380" y="776" class="font tiny">保证“AI看到的现实”来自可追溯、可治理的数据。</text>
+
+<rect x="110" y="810" width="1620" height="78" rx="16" fill="#fff"/>
+<rect x="110" y="810" width="235" height="78" rx="16" fill="#f39c22"/><text x="228" y="861" class="font white" text-anchor="middle" font-size="26" font-weight="700">规则 / 分析引擎</text>
+<text x="380" y="843" class="font body">执行确定性计算、规则校验、异常诊断、指标计算和证据关联。</text><text x="380" y="871" class="font tiny">把“推理”落到可验证的逻辑和数据上。</text>
+
+<rect x="1200" y="905" width="500" height="48" rx="24" fill="#0b3b82"/><text x="1450" y="936" class="font white" text-anchor="middle" font-size="20" font-weight="700">AI负责“理解与编排”，知识和数据负责“事实与依据”</text>
+
+<text x="1790" y="1012" class="font tiny" text-anchor="end">中创股份 · AI时代企业数据与知识双底座建设实践</text>
+</svg>

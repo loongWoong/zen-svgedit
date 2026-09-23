@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<style>
+  .font{font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif;}
+  .title{font-size:54px;font-weight:700;fill:#0b3b82}
+  .subtitle{font-size:24px;fill:#52657a}
+  .h2{font-size:30px;font-weight:700;fill:#0b3b82}
+  .body{font-size:22px;fill:#24364b}
+  .small{font-size:19px;fill:#52657a}
+  .tiny{font-size:17px;fill:#63758a}
+  .white{fill:#fff}
+  .blue{fill:#1769e0}
+  .navy{fill:#0b3b82}
+  .teal{fill:#14a3a2}
+  .green{fill:#24a148}
+  .orange{fill:#f39c22}
+  .purple{fill:#7656d6}
+  .muted{fill:#edf4fb}
+  .line{stroke:#bad0e9;stroke-width:2}
+  .arrow{stroke:#5b8fd8;stroke-width:5;fill:none;marker-end:url(#arrow)}
+  .soft{filter:url(#shadow)}
+</style>
+<defs>
+ <linearGradient id="gBlue" x1="0" x2="1"><stop offset="0" stop-color="#0e65d8"/><stop offset="1" stop-color="#2aa5f5"/></linearGradient>
+ <linearGradient id="gTeal" x1="0" x2="1"><stop offset="0" stop-color="#10a9a6"/><stop offset="1" stop-color="#46c9b0"/></linearGradient>
+ <linearGradient id="gPurple" x1="0" x2="1"><stop offset="0" stop-color="#6e4fd3"/><stop offset="1" stop-color="#9a73ef"/></linearGradient>
+ <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1d4f8f" flood-opacity="0.10"/></filter>
+ <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 Z" fill="#5b8fd8"/></marker>
+</defs>
+<rect width="1920" height="1080" fill="#f7fbff"/>
+<rect x="54" y="52" width="10" height="76" rx="5" fill="#1769e0"/>
+<text x="90" y="98" class="font title">知识中台到底是什么？——统一承载企业业务语义</text>
+<text x="90" y="142" class="font subtitle">知识中台不是知识库的放大版，而是企业把数据、规则、经验和流程组织成统一业务认知体系的基础设施。</text>
+
+<!-- source column -->
+<rect x="75" y="205" width="360" height="690" rx="24" fill="#ffffff" stroke="#cfe1f5" stroke-width="2" class="soft"/>
+<rect x="75" y="205" width="360" height="70" rx="24" fill="url(#gBlue)"/>
+<text x="105" y="250" class="font h2 white">企业知识来源</text>
+
+<g class="font body">
+ <rect x="102" y="305" width="305" height="78" rx="14" fill="#eef6ff"/><text x="126" y="336">业务数据</text><text x="126" y="364" class="small">交易 / 生产 / 设备 / IoT</text>
+ <rect x="102" y="400" width="305" height="78" rx="14" fill="#eefbf9"/><text x="126" y="431">业务系统</text><text x="126" y="459" class="small">ERP / CRM / MES / WMS</text>
+ <rect x="102" y="495" width="305" height="78" rx="14" fill="#fff8eb"/><text x="126" y="526">制度与规则</text><text x="126" y="554" class="small">标准 / 流程 / 合规 / 算法规则</text>
+ <rect x="102" y="590" width="305" height="78" rx="14" fill="#f6f0ff"/><text x="126" y="621">业务经验</text><text x="126" y="649" class="small">案例 / 专家经验 / 处置方案</text>
+ <rect x="102" y="685" width="305" height="78" rx="14" fill="#f2f8ff"/><text x="126" y="716">业务流程</text><text x="126" y="744" class="small">生产 / 运维 / 销售 / 决策</text>
+</g>
+
+<path d="M435 550 C475 550 482 550 520 550" class="arrow"/>
+
+<!-- central platform -->
+<rect x="520" y="185" width="875" height="715" rx="28" fill="#ffffff" stroke="#9dc6ef" stroke-width="3" class="soft"/>
+<rect x="520" y="185" width="875" height="90" rx="28" fill="url(#gBlue)"/>
+<text x="565" y="244" class="font" font-size="38" font-weight="700" fill="#fff">企业知识中台</text>
+<text x="565" y="279" class="font" font-size="18" fill="#d9efff">不是把知识集中存储，而是把企业业务语义组织成可理解、可推理、可服务的统一体系</text>
+
+<!-- three knowledge cards -->
+<rect x="555" y="310" width="250" height="190" rx="22" fill="#edf6ff" stroke="#b9d8f7"/>
+<circle cx="605" cy="360" r="28" fill="#1769e0"/><text x="605" y="371" class="font white" text-anchor="middle" font-size="28" font-weight="700">语</text>
+<text x="650" y="356" class="font h2">业务语义</text>
+<text x="650" y="392" class="font small">对象 / 属性 / 关系</text>
+<text x="650" y="420" class="font small">状态 / 事件 / 上下文</text>
+<text x="650" y="448" class="font small">描述“是什么”</text>
+
+<rect x="830" y="310" width="250" height="190" rx="22" fill="#edfafa" stroke="#b6e3df"/>
+<circle cx="880" cy="360" r="28" fill="#14a3a2"/><text x="880" y="371" class="font white" text-anchor="middle" font-size="28" font-weight="700">规</text>
+<text x="925" y="356" class="font h2">业务规则</text>
+<text x="925" y="392" class="font small">条件 / 阈值 / 公式</text>
+<text x="925" y="420" class="font small">约束 / 合规 / 逻辑</text>
+<text x="925" y="448" class="font small">定义“怎么做”</text>
+
+<rect x="1105" y="310" width="250" height="190" rx="22" fill="#fff6e9" stroke="#f2d2a0"/>
+<circle cx="1155" cy="360" r="28" fill="#f39c22"/><text x="1155" y="371" class="font white" text-anchor="middle" font-size="28" font-weight="700">经</text>
+<text x="1200" y="356" class="font h2">业务经验</text>
+<text x="1200" y="392" class="font small">制度 / 案例 / 方案</text>
+<text x="1200" y="420" class="font small">处置经验 / 专家知识</text>
+<text x="1200" y="448" class="font small">沉淀“怎么更好”</text>
+
+<!-- ontology core -->
+<rect x="555" y="550" width="800" height="150" rx="24" fill="url(#gPurple)" class="soft"/>
+<text x="955" y="604" class="font white" text-anchor="middle" font-size="36" font-weight="700">统一业务语义层（本体）</text>
+<text x="955" y="640" class="font white" text-anchor="middle" font-size="22">统一描述业务对象、关系、状态、规则与业务上下文</text>
+<text x="955" y="674" class="font" text-anchor="middle" font-size="20" fill="#eae1ff">本体不是知识中台之外的“另一套知识”，而是知识中台承载业务语义的核心技术平台</text>
+
+<path d="M955 500 L955 545" class="arrow"/>
+
+<!-- service layer -->
+<rect x="555" y="750" width="800" height="105" rx="22" fill="#f0f7ff" stroke="#c8def5"/>
+<text x="590" y="790" class="font h2">知识服务</text>
+<text x="590" y="824" class="font small">语义检索 · 关系查询 · 规则推理 · 业务解释 · Agent能力调用</text>
+
+<!-- right -->
+<path d="M1395 550 C1435 550 1440 550 1480 550" class="arrow"/>
+<rect x="1480" y="205" width="365" height="690" rx="24" fill="#ffffff" stroke="#cfe1f5" stroke-width="2" class="soft"/>
+<rect x="1480" y="205" width="365" height="70" rx="24" fill="url(#gTeal)"/>
+<text x="1510" y="250" class="font h2 white">服务对象</text>
+
+<rect x="1510" y="310" width="305" height="125" rx="18" fill="#eef7ff"/><text x="1535" y="350" class="font h2">企业数据</text><text x="1535" y="385" class="font small">统一业务视图</text><text x="1535" y="414" class="font small">数据与语义建立映射</text>
+<rect x="1510" y="465" width="305" height="125" rx="18" fill="#eefbf9"/><text x="1535" y="505" class="font h2">AI</text><text x="1535" y="540" class="font small">理解业务 / 查询 / 推理</text><text x="1535" y="569" class="font small">Agent / 智能决策</text>
+<rect x="1510" y="620" width="305" height="125" rx="18" fill="#fff8eb"/><text x="1535" y="660" class="font h2">业务应用</text><text x="1535" y="695" class="font small">分析 / 诊断 / 预警 / 决策</text><text x="1535" y="724" class="font small">执行 / 反馈 / 持续沉淀</text>
+
+<rect x="470" y="930" width="980" height="64" rx="32" fill="#0b3b82"/>
+<text x="960" y="972" class="font white" text-anchor="middle" font-size="24" font-weight="700">一句话：知识中台管的是“企业业务语义”，本体智能平台是承载这层语义并连接数据与AI的核心能力。</text>
+
+<text x="1790" y="1012" class="font tiny" text-anchor="end">中创股份 · AI时代企业数据与知识双底座建设实践</text>
+</svg>

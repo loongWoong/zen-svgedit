@@ -1,0 +1,1458 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>SVG Beautifier · svgedit × Laya</title>
+<style>
+  :root{
+    --bg:#f4f6f9; --card:#ffffff; --line:#e3e7ee; --line2:#eef1f6;
+    --tx:#1b2432; --tx2:#5a6779; --tx3:#8b97a8;
+    --acc:#2f6fed; --acc2:#0d9488; --warn:#c2740a; --bad:#d64545; --ok:#12805c;
+    --crit:#d64545; --high:#c2740a; --med:#2f6fed; --low:#98a2b3;
+    --mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--tx);font:13px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;display:flex;flex-direction:column;overflow:hidden}
+
+  /* ---------------- 顶栏 ---------------- */
+  #bar{flex:0 0 auto;display:flex;align-items:center;gap:14px;padding:9px 14px;background:var(--card);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  #bar h1{margin:0;font-size:14px;font-weight:700;letter-spacing:.2px}
+  #bar h1 span{font-weight:400;color:var(--tx3);font-size:12px;margin-left:6px}
+  .grp{display:flex;align-items:center;gap:6px}
+  .grp>label{color:var(--tx3);font-size:11.5px;white-space:nowrap}
+  select,button{font:inherit;font-size:12px;border:1px solid var(--line);background:#fff;color:var(--tx);border-radius:6px;padding:4px 8px;height:28px;cursor:pointer}
+  select{max-width:330px}
+  button:hover{border-color:#c9d3e2;background:#fafbfd}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600;padding:4px 14px}
+  button.primary:hover{background:#2a63d8}
+  button.primary:disabled{opacity:.5;cursor:progress}
+  button.ghost{color:var(--tx2)}
+  .hidden{display:none !important}
+  .spacer{flex:1 1 auto}
+  .badge{font:11px/1 var(--mono);padding:4px 7px;border-radius:5px;background:#f0f3f8;color:var(--tx2);border:1px solid var(--line2)}
+  .badge.on{background:#e8f6f1;color:var(--ok);border-color:#c3e6da}
+  .badge.off{background:#fdf3e7;color:var(--warn);border-color:#f0dfc4}
+
+  /* ---------------- 三栏 ---------------- */
+  #wrap{flex:1 1 auto;display:flex;min-height:0}
+  aside{flex:0 0 auto;background:var(--card);overflow:auto}
+  /* 左栏：标题与「本地文件」提示常驻，只有样例列表滚动（列表会长到 40+ 条） */
+  #left{width:236px;border-right:1px solid var(--line);padding:10px;display:flex;flex-direction:column;overflow:hidden}
+  #right{width:388px;border-left:1px solid var(--line);padding:10px}
+  #mid{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;padding:10px 12px;gap:8px}
+  aside h2{margin:0 0 7px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--tx3)}
+  aside h2 .n{float:right;font-weight:400;text-transform:none;letter-spacing:0}
+
+  /* 样例列表 */
+  #samples{display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-height:0;overflow:auto}
+  .samp{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:5px;cursor:pointer;border:1px solid transparent}
+  .samp:hover{background:#f7f9fc}
+  .samp.on{background:#eaf1fe;border-color:#c9dbfb}
+  .samp .id{flex:1 1 auto;min-width:0;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .samp .sc{font:10.5px/1 var(--mono);padding:2px 4px;border-radius:4px;background:#f0f3f8;color:var(--tx2)}
+  .samp .sc.good{background:#e8f6f1;color:var(--ok)}
+  .samp .sc.bad{background:#fdecec;color:var(--bad)}
+  .samp.real .id::before{content:"★ ";color:var(--warn)}
+
+  /* 视图 tab */
+  #tabs{display:flex;gap:4px;flex-wrap:wrap}
+  #tabs button{padding:3px 9px;font-size:11.5px;border-radius:5px;color:var(--tx2)}
+  #tabs button.on{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+
+  /* 舞台 */
+  #stage{position:relative;flex:1 1 auto;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  #host{position:absolute;left:0;top:0;width:100%;height:100%;overflow:auto}
+  svg.svgb-ovl{position:absolute;left:0;top:0;pointer-events:none;z-index:9;overflow:visible}
+
+  /* 拖拽入舞台 */
+  #drop{position:absolute;inset:0;z-index:20;display:none;align-items:center;justify-content:center;
+        background:rgba(47,111,237,.06);border:2px dashed var(--acc);border-radius:8px;
+        pointer-events:none;flex-direction:column;gap:6px}
+  #stage.dropping #drop{display:flex}
+  #drop b{font-size:14px;color:var(--acc)}
+  #drop span{font-size:11.5px;color:var(--tx2)}
+
+  /* 本地文件标记 */
+  .samp.local .id::before{content:"◈ ";color:var(--acc2)}
+  #sampMeta{flex:0 0 auto}
+  #sampMeta .lp{color:var(--tx3)}
+
+  /* ---------------- 编辑模式 ----------------
+   * #host 恒为 user-select:none（画布不该能选文字）。
+   * 非编辑模式的「不可编辑」由 09_editor.js 的捕获期守卫实现，不靠 pointer-events：
+   * svgcanvas 的 mousedown 监听器就注册在 #host 自身上，同一节点上的监听器之间
+   * 无法用 stopPropagation 相互阻断，所以守卫挂父节点 #stage 的捕获阶段。 */
+  #host{user-select:none}
+  /* 编辑工具条在 #mid 的流里（与官方 svg-edit 同构：工具条在上、画布让位）。
+     代价是 #stage 高 862→786（实测 edit_diag2.cjs），因此**进出编辑模式后
+     必须重算屏幕坐标**——任何缓存的元素屏幕位置都会失效 76px。 */
+  #editbar{display:none;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 8px;
+           background:#f8fafc;border:1px solid var(--line);border-radius:7px}
+  #editbar.on{display:flex}
+  #editbar .sep{width:1px;height:18px;background:var(--line);margin:0 1px;flex:0 0 auto}
+  #editbar label{color:var(--tx3);font-size:11px;flex:0 0 auto}
+  #editbar input[type=color]{width:26px;height:24px;padding:1px;border:1px solid var(--line);
+                             border-radius:5px;background:#fff;cursor:pointer;flex:0 0 auto}
+  #editbar input[type=number],#editbar input[type=text]{height:24px;border:1px solid var(--line);
+                             border-radius:5px;padding:1px 5px;font:11.5px var(--mono);color:var(--tx);background:#fff}
+  #editbar input[type=number]{width:58px}
+  #editbar input[type=text]{width:132px}
+  #editbar input:disabled{background:#f2f4f8;color:var(--tx3)}
+  #editbar button{padding:2px 7px;height:24px;font-size:11.5px;flex:0 0 auto}
+  #editbar select{height:24px;padding:1px 4px;font-size:11.5px;max-width:96px}
+  #editbar button:disabled{opacity:.42;cursor:not-allowed}
+  #selInfo{font:11.5px/1.4 var(--mono);color:var(--acc);max-width:300px;overflow:hidden;
+           text-overflow:ellipsis;white-space:nowrap;flex:0 0 auto}
+  #selInfo.none{color:var(--tx3)}
+  /* 编辑台账 */
+  #editPanel{display:none}
+  #editPanel.on{display:block}
+  .etrk{display:flex;gap:6px;align-items:baseline;padding:2.5px 5px;border-bottom:1px solid var(--line2)}
+  .etrk .n{font:10px/1.3 var(--mono);color:var(--tx3);flex:0 0 18px}
+  .etrk .l{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+           color:var(--tx2);font-size:11px}
+  .etrk .s{font:11px/1.3 var(--mono);font-weight:600;flex:0 0 auto}
+  .etrk .d{font:10px/1.3 var(--mono);padding:1.5px 4px;border-radius:4px;background:#f0f3f8;
+           color:var(--tx2);flex:0 0 auto}
+  .etrk .d.up{background:#e8f6f1;color:var(--ok)}
+  .etrk .d.dn{background:#fdecec;color:var(--bad)}
+  /* 轨迹行可点击回退（#5）：可回退的才有手型与悬停底色，不可回退的保持朴素，避免假affordance */
+  .etrk.clickable{cursor:pointer;border-radius:4px}
+  .etrk.clickable:hover{background:#eef4ff}
+  .etrk .u{font:10px/1.3 var(--mono);color:var(--acc);flex:0 0 auto;opacity:.85}
+  /* 编辑改动清单（#2）：逐条可取消 —— 勾掉即把该步改动定向还原（含结构变更的整段回退） */
+  .etrk .cb{margin:0;flex:0 0 auto;cursor:pointer}
+  .etrk .cb:disabled{cursor:not-allowed;opacity:.4}
+  .etrk.done{opacity:.45}
+  .etrk.done .l{text-decoration:line-through}
+  .etrk .tag{font:10px/1.3 var(--mono);padding:1px 4px;border-radius:4px;background:#eef1f6;
+             color:var(--tx3);flex:0 0 auto}
+  /* Ctrl 多选（#3）：多选时属性框里的值可能只是「多数派/首值」——
+   * 用虚线边框如实标出「多值」，绝不假装它们本来就是同一个值。
+   * 改一下就统一写成所填的值（颜色/字号/线宽都是全选区一次写入、一条撤销命令）。 */
+  #editbar input.mixed,#editbar select.mixed{border-color:var(--warn);border-style:dashed}
+
+  /* 美化改动清单（#3）：逐条可勾选 */
+  #opPanel{display:none}
+  #opPanel.on{display:block}
+  button.mini{font-size:11px;padding:1.5px 6px;border-radius:5px;margin-right:4px;cursor:pointer}
+  button.mini.primary{background:var(--acc);color:#fff;border-color:var(--acc)}
+  button.mini:disabled{opacity:.45;cursor:not-allowed}
+  #opList{max-height:230px;overflow:auto;margin-top:4px}
+  .oprow{display:flex;gap:6px;align-items:flex-start;padding:3px 5px;border-bottom:1px solid var(--line2)}
+  .oprow:hover{background:#f7faff}
+  .oprow.off{opacity:.42}
+  .oprow input{margin:2px 0 0 0;flex:0 0 auto}
+  .oprow .t{flex:1 1 auto;min-width:0}
+  .oprow .t b{display:block;font-size:11px;font-weight:600;color:var(--tx);overflow:hidden;
+              text-overflow:ellipsis;white-space:nowrap}
+  .oprow .t span{display:block;font:10px/1.35 var(--mono);color:var(--tx3);
+                 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* 指标条 */
+  .m{display:grid;grid-template-columns:62px 1fr 46px;gap:6px;align-items:center;margin-bottom:3px}
+  .m .k{font-size:11px;color:var(--tx2)}
+  .m .bar{position:relative;height:9px;background:#f0f2f6;border-radius:5px;overflow:hidden}
+  .m .bar i{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:#cfd8e6}
+  .m .bar i.bf{background:#c3cbda}
+  .m .bar i.af{background:var(--acc2);opacity:.9}
+  .m .v{font:11px/1 var(--mono);text-align:right;color:var(--tx2)}
+  .m .v.up{color:var(--ok);font-weight:700}
+  .m .v.dn{color:var(--bad);font-weight:700}
+
+  .score{display:flex;align-items:baseline;gap:8px;margin:2px 0 9px}
+  .score b{font:700 26px/1 var(--mono)}
+  .score .to{color:var(--tx3);font-size:13px}
+  .score .d{font:700 13px/1 var(--mono);padding:3px 7px;border-radius:5px;background:#e8f6f1;color:var(--ok)}
+  .score .d.dn{background:#fdecec;color:var(--bad)}
+  .score .d.zero{background:#f0f3f8;color:var(--tx2)}
+
+  /* issue 列表 */
+  .iss{display:flex;gap:6px;padding:5px 6px;border:1px solid var(--line2);border-radius:6px;margin-bottom:4px;align-items:flex-start}
+  .iss .no{flex:0 0 auto;width:17px;height:17px;border-radius:50%;color:#fff;font:700 10px/17px var(--mono);text-align:center}
+  .iss .bd{flex:1 1 auto;min-width:0}
+  .iss .ty{font-size:11.5px;font-weight:600}
+  .iss .ev{font:10.5px/1.45 var(--mono);color:var(--tx3);word-break:break-all}
+  .iss .tg{font:10.5px/1.4 var(--mono);color:var(--acc);word-break:break-all}
+  .p-critical{background:var(--crit)} .p-high{background:var(--high)}
+  .p-medium{background:var(--med)} .p-low{background:var(--low)}
+
+  /* 台账 */
+  .rd{border:1px solid var(--line2);border-radius:6px;margin-bottom:5px;overflow:hidden}
+  .rd>.hd{display:flex;gap:7px;align-items:center;padding:4px 7px;background:#f8fafc;font-size:11.5px}
+  .rd>.hd .g{font:600 11px/1 var(--mono);padding:2px 5px;border-radius:4px;background:#e8f6f1;color:var(--ok)}
+  .rd>.hd .g.dn{background:#fdecec;color:var(--bad)}
+  .rd>.hd .g.zero{background:#f0f3f8;color:var(--tx2)}
+  .st{display:flex;gap:6px;padding:3px 7px;border-top:1px solid var(--line2);font-size:11px;align-items:baseline}
+  .st .ok{color:var(--ok);font-weight:700}
+  .st .no{color:var(--bad);font-weight:700}
+  .st .k{font:10.5px/1.4 var(--mono);color:var(--tx3);flex:1 1 auto;min-width:0;word-break:break-all}
+  .kv{display:flex;gap:6px;font-size:11px;padding:1.5px 0}
+  .kv .k{color:var(--tx3);flex:0 0 74px}
+  .kv .v{font:11px/1.45 var(--mono);color:var(--tx);flex:1 1 auto;min-width:0;word-break:break-all}
+  .sec{border-top:1px solid var(--line2);margin-top:9px;padding-top:9px}
+  .empty{color:var(--tx3);font-size:11.5px;padding:3px 0}
+  #log{font:11px/1.5 var(--mono);color:var(--tx3);max-height:88px;overflow:auto;white-space:pre-wrap}
+  .pill{display:inline-block;font:10px/1 var(--mono);padding:2px 5px;border-radius:4px;background:#f0f3f8;color:var(--tx2);margin:0 4px 3px 0}
+  .pill.rule{background:#eef2fb;color:var(--acc)} .pill.mix{background:#e8f6f1;color:var(--ok)}
+  .pill.model{background:#fdf3e7;color:var(--warn)} .pill.fb{background:#fdecec;color:var(--bad)}
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <h1>SVG Beautifier<span>svgedit 解析 × Laya 局部判断</span></h1>
+  <div class="grp">
+    <button id="btnOpen" class="primary" title="打开本地 SVG 文件（可多选）· 也可直接拖到画布上 · Ctrl/Cmd+O">打开 SVG…</button>
+    <input id="fileInput" class="hidden" type="file" accept=".svg,image/svg+xml,text/xml,application/xml" multiple>
+  </div>
+  <div class="grp">
+    <button id="btnEdit" class="ghost" title="进入编辑模式：直接选择 / 移动 / 缩放 / 改属性，每一步都会重算质量分">编辑</button>
+  </div>
+  <div class="grp"><label>样例</label><select id="selSample"></select></div>
+  <div class="grp"><label>策略</label>
+    <select id="selStrategy">
+      <option value="rule">rule · 纯规则（离线可用）</option>
+      <option value="mix">mix · 规则窄带 + 模型破平</option>
+      <option value="model">model · 模型原样（对照）</option>
+    </select>
+  </div>
+  <div class="grp"><label>缩放</label>
+    <select id="selZoom">
+      <option value="fit">适应</option>
+      <option value="0.4">0.4（L1 骨架）</option>
+      <option value="1">1.0（L2 骨架+连线）</option>
+      <option value="2.5">2.5（L3 加 glyph）</option>
+    </select>
+  </div>
+  <button id="btnPreview" class="ghost">仅预览</button>
+  <button id="btnFix" class="primary">一键美化</button>
+  <button id="btnReset" class="ghost">重置</button>
+  <button id="btnExport" class="ghost">导出 SVG</button>
+  <div class="spacer"></div>
+  <span id="layaBadge" class="badge off">Laya 未探测</span>
+  <span id="statBadge" class="badge">—</span>
+</div>
+
+<div id="wrap">
+  <aside id="left">
+    <h2>样例 <span class="n" id="nSamp"></span></h2>
+    <div id="sampMeta" class="empty" style="margin-bottom:7px"></div>
+    <div id="samples"></div>
+  </aside>
+
+  <section id="mid">
+    <div id="tabs">
+      <button data-v="original" class="on">原图</button>
+      <button data-v="wireframe">Wireframe</button>
+      <button data-v="diagnostic">诊断</button>
+      <button data-v="proposed">提案</button>
+      <div class="spacer"></div>
+      <span class="badge" id="viewInfo">—</span>
+    </div>
+    <div id="editbar">
+      <span id="selInfo" class="none">未选中元素 · 在画布上点击选择</span>
+      <span class="sep"></span>
+      <label>填充</label><input id="eFill" type="color" value="#ffffff">
+      <label>描边</label><input id="eStroke" type="color" value="#000000">
+      <label>线宽</label><input id="eSW" type="number" min="0" step="0.5" value="1">
+      <span class="sep"></span>
+      <label>字号</label><input id="eFS" type="number" min="1" step="1" value="14">
+      <input id="eText" type="text" placeholder="文本内容（限 text 元素）">
+      <button id="eBold" title="加粗">B</button>
+      <button id="eItalic" title="斜体">I</button>
+      <span class="sep"></span>
+      <button id="eDown1" title="选择下钻：把选中项内部的文本/子元素纳入选择（点到的常是最外层分组，改文字要先下钻）">下钻</button>
+      <button id="eUp1" title="选择上钻：把选择上提到父节点">上钻</button>
+      <button id="eSame" title="选同类：把与当前元素同类的元素一次全选上 —— 形状按「同 tag + 宽高相近」、文本按「同字号」匹配。配合 Ctrl 多选可一次改掉全部同类元素">选同类</button>
+      <span class="sep"></span>
+      <button id="eL" title="左移 2px">←</button>
+      <button id="eR" title="右移 2px">→</button>
+      <button id="eUp" title="上移 2px">↑</button>
+      <button id="eDn" title="下移 2px">↓</button>
+      <label>旋转</label><input id="eRot" type="number" step="15" value="0" title="单位：度。svgcanvas 的 setRotationAngle 只作用于第一个选中元素">
+      <button id="eRotGo" title="应用旋转（仅第一个选中元素）">转</button>
+      <span class="sep"></span>
+      <select id="eAlign" title="对齐；单选时相对画布，多选时相对选区">
+        <option value="">对齐…</option>
+        <option value="l">左对齐</option><option value="c">水平居中</option><option value="r">右对齐</option>
+        <option value="t">顶对齐</option><option value="m">垂直居中</option><option value="b">底对齐</option>
+      </select>
+      <button id="eFlipH" title="水平翻转">⇋</button>
+      <button id="eFlipV" title="垂直翻转">⇅</button>
+      <span class="sep"></span>
+      <button id="eGroup" title="把选中元素包进一个 g">成组</button>
+      <button id="eUngroup" title="拆掉选中的 g">解组</button>
+      <button id="eLayerUp" title="上移一层">层↑</button>
+      <button id="eLayerDn" title="下移一层">层↓</button>
+      <button id="eTop" title="移到最上层">置顶</button>
+      <button id="eBottom" title="移到最下层">置底</button>
+      <button id="eClone" title="原地复制一份（偏移 12px）">副本</button>
+      <button id="eDel" title="删除选中元素">删除</button>
+      <span class="sep"></span>
+      <button id="eUndo" title="撤销（走 svgcanvas 的 undoMgr）">撤销</button>
+      <button id="eRedo" title="重做">重做</button>
+    </div>
+    <div id="stage">
+      <div id="host"></div>
+      <div id="drop"><b>松开以打开 SVG</b><span>支持一次拖入多个文件；也可以拖入一段 SVG 文本</span></div>
+    </div>
+  </section>
+
+  <aside id="right">
+    <h2>质量 Before / After</h2>
+    <div class="score">
+      <b id="scB">—</b><span class="to">→</span><b id="scA">—</b>
+      <span class="d zero" id="scD">—</span>
+    </div>
+    <div id="metrics"></div>
+    <div class="kv" style="margin-top:6px"><span class="k">画布</span><span class="v" id="kCanvas">—</span></div>
+    <div class="kv"><span class="k">结构</span><span class="v" id="kStats">—</span></div>
+    <div class="kv"><span class="k">原始指标</span><span class="v" id="kRaw">—</span></div>
+
+    <div class="sec" id="opPanel">
+      <h2>美化改动清单 <span class="n" id="nOps">—</span></h2>
+      <div class="kv"><span class="k">勾选</span><span class="v">
+        <button id="opAll" class="mini" title="全选">全选</button>
+        <button id="opNone" class="mini" title="全不选">全不选</button>
+        <button id="opApply" class="mini primary" title="按当前勾选执行一键美化">应用勾选项</button>
+      </span></div>
+      <div id="opList"><div class="empty">按「仅预览」可列出将要执行的每一项改动，逐条勾选后再应用。</div></div>
+    </div>
+
+    <div class="sec" id="editPanel">
+      <h2>编辑闭环 <span class="n" id="nEdit"></span></h2>
+      <div class="score">
+        <b id="eSB">—</b><span class="to">→</span><b id="eSA">—</b>
+        <span class="d zero" id="eSD">—</span>
+      </div>
+      <div class="kv"><span class="k">选中</span><span class="v" id="eSelK">—</span></div>
+      <div class="kv"><span class="k">元素框</span><span class="v" id="eBox">—</span></div>
+      <div class="kv"><span class="k">相关 issue</span><span class="v" id="eIss">—</span></div>
+      <div class="kv"><span class="k">撤销 / 重做</span><span class="v" id="eUndoSt">—</span></div>
+      <div class="row" style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <span class="k" style="min-width:auto">改动清单</span>
+        <button class="mini" id="eClr" title="把所有编辑改动整体回退到「进入编辑模式」时的状态">↺ 全部回退</button>
+        <span class="hint" id="eSum" style="color:var(--tx2);font-size:11px"></span>
+      </div>
+      <div id="eTrack" style="margin-top:5px"></div>
+    </div>
+
+    <div class="sec">
+      <h2>Issue 面板 <span class="n" id="nIss"></span></h2>
+      <div id="issues"><div class="empty">加载样例中…</div></div>
+    </div>
+
+    <div class="sec">
+      <h2>Laya 决策 <span class="n" id="nDec"></span></h2>
+      <div id="dec"><div class="empty">需先执行「仅预览」或「一键美化」。</div></div>
+    </div>
+
+    <div class="sec">
+      <h2>Patch 台账 <span class="n" id="nLed"></span></h2>
+      <div id="ledger"><div class="empty">需先执行「一键美化」。</div></div>
+      <div id="log"></div>
+    </div>
+  </aside>
+</div>
+
+<script src="vendor/svgcanvas.min.js"></script>
+<script src="src/01_util.js"></script>
+<script src="src/02_runtime.js"></script>
+<script src="src/03_ir.js"></script>
+<script src="src/04_analyzer.js"></script>
+<script src="src/06_geometry.js"></script>
+<script src="src/05_laya.js"></script>
+<script src="src/07_patch.js"></script>
+<script src="src/10_samples.js"></script>
+<script src="src/11_realsvgs.js"></script>
+<script src="src/08_ui.js"></script>
+<script src="src/09_editor.js"></script>
+<script>
+/* =============================================================================
+ * 产品页控制器
+ *
+ * 宪法约束（可被自动化断言）：**Wireframe 是 View，不是 Mutation**。
+ *   切换任何视图都不得改变 rt.exportString() 的一个字节 —— 视图层只往
+ *   <svg class="svgb-ovl"> 里画，内容 DOM 只被「一键美化」（Patch 引擎）改。
+ * ===========================================================================*/
+'use strict';
+
+const UI = {
+  MODE: 'beautify',           /* beautify | dryrun */
+  samples: [],
+  cur: -1,
+  view: 'original',
+  zoomSel: 'fit',
+  zoom: 1,
+  stage: null, host: null,
+  ir: null, an: null, lastResult: null, propOps: [],
+  opState: new Map(),     /* 美化改动清单的勾选状态：signature → bool（跨重绘保留） */
+  editing: false,
+  _selRaf: 0,
+  _scrollRaf: 0,
+  busy: false,
+  logLines: [],
+
+  $(id) { return document.getElementById(id); },
+  log(s) { this.logLines.push(s); if (this.logLines.length > 60) this.logLines.shift(); this.$('log').textContent = this.logLines.join('\n'); },
+
+  /* ------------------------------- 初始化 ------------------------------- */
+  async init() {
+    this.stage = this.$('stage'); this.host = this.$('host');
+    if (!window.SVGCanvasLib) { this.log('vendor/svgcanvas.min.js 未加载'); return false; }
+    const box = this.stage.getBoundingClientRect();
+    const ok = Runtime.mount(this.host, [Math.max(320, Math.round(box.width)), Math.max(240, Math.round(box.height))]);
+    if (!ok) { this.log('运行时挂载失败: ' + Runtime.lastError); return false; }
+    /* 决策后端探测是非阻塞的：file:// 下不可用时 LayaDecide 会自动回退 rule */
+    Laya.probe().then(b => {
+      const el = this.$('layaBadge');
+      el.textContent = b ? 'Laya 在线 ' + b : 'Laya 离线 · 自动回退 rule';
+      el.className = 'badge ' + (b ? 'on' : 'off');
+    });
+
+    this.samples = buildSampleTable();
+    this.$('nSamp').textContent = this.samples.length + ' 件';
+    this.renderSampleList();
+    this.wire();
+    /* 编辑层：装配事件 + 挂上非编辑模式的输入守卫（守卫拦在 #stage 捕获阶段） */
+    Editor.armGuard(this.stage);
+    Editor.attach(Runtime, (what, extra) => this.onEditor(what, extra));
+    await this.select(this.samples.findIndex(s => s.expectClean && !s.real) >= 0
+      ? this.samples.findIndex(s => s.expectClean && !s.real) : 0);
+    return true;
+  },
+
+  renderSampleList() {
+    const box = this.$('samples'); box.innerHTML = '';
+    this.samples.forEach((s, i) => {
+      const d = document.createElement('div');
+      d.className = 'samp' + (s.real ? ' real' : '') + (s.local ? ' local' : '');
+      d.title = s.id + '\n' + (s.sub || '') + (s.local ? '\n(本地文件 · 仅存于内存)' : '');
+      const id = document.createElement('span'); id.className = 'id'; id.textContent = s.id;
+      const sc = document.createElement('span'); sc.className = 'sc'; sc.textContent = '—';
+      d.appendChild(id); d.appendChild(sc);
+      d.onclick = () => this.select(i);
+      s.__el = d; s.__sc = sc;
+      box.appendChild(d);
+    });
+  },
+
+  /* 下拉与左栏列表共用同一份 samples；本地文件会追加进来，故下拉必须可重建 */
+  buildSampleOptions() {
+    const sel = this.$('selSample');
+    sel.innerHTML = '';
+    this.samples.forEach((x, k) => {
+      const o = document.createElement('option'); o.value = k;
+      o.textContent = x.id + (x.real ? '  ★' : '') + (x.local ? '  ◈' : '');
+      sel.appendChild(o);
+    });
+    if (this.cur >= 0 && this.cur < this.samples.length) sel.value = String(this.cur);
+  },
+
+  /* ----------------------------- 打开本地文件 -----------------------------
+   * 纯浏览器读文本：不落盘、不上传，内容只留在内存里。
+   * 打开动作**不碰** Runtime（不 load、不分析）—— 读完交给 select()，
+   * 走与内置样例完全相同的路径，保证本地图与内置图在后续环节不可区分。
+   * ----------------------------------------------------------------------*/
+  localSeq: 0,
+
+  stripExt(n) { return String(n).replace(/\.svgz?$/i, '').replace(/^.*[\\/]/, '') || 'dropped'; },
+
+  /* 打开后左栏提示：本地条目是会话级内存态 */
+  markLocal() {
+    const n = this.samples.filter(s => s.local).length;
+    this.$('nSamp').textContent = this.samples.length + ' 件' + (n ? '（本地 ' + n + '）' : '');
+    if (!n) return;
+    this.$('sampMeta').innerHTML = '<span class="lp">本次会话已打开 ' + n + ' 个本地文件：'
+      + '只存在于内存，刷新即失。「一键美化」只改内存工作副本，原始文件不会被写回；'
+      + '需留存请点「导出 SVG」另存。</span>';
+  },
+
+  pickLocal() { const f = this.$('fileInput'); f.value = ''; f.click(); },
+
+  /* 逐文件读取，单个失败只记日志、不中断整批 */
+  readFiles(files) {
+    const list = Array.prototype.slice.call(files || []);
+    return Promise.all(list.map(f => new Promise(res => {
+      if (!f || !f.size) { this.log('[打开] 跳过空文件 ' + (f && f.name)); return res(null); }
+      const fr = new FileReader();
+      fr.onload = () => res({ name: f.name || 'dropped.svg', text: String(fr.result || '') });
+      fr.onerror = () => { this.log('[打开] 读取失败 ' + f.name); res(null); };
+      try { fr.readAsText(f, 'utf-8'); }
+      catch (e) { this.log('[打开] 读取异常 ' + f.name + ': ' + (e && e.message)); res(null); }
+    })));
+  },
+
+  /* 入口：接受 FileList，也接受 [{name,text}]（拖入文本时用） */
+  async openFiles(files) {
+    const arr = Array.prototype.slice.call(files || []);
+    if (!arr.length) return;
+    const isFile = typeof File !== 'undefined' && arr[0] instanceof File;
+    const rows = isFile ? await this.readFiles(arr) : arr;
+    let last = -1, ok = 0, skip = 0;
+    for (const r of rows) {
+      if (!r || !r.text) continue;
+      const t = r.text.trim();
+      if (!t) { this.log('[打开] 空内容 ' + r.name); skip++; continue; }
+      if (t[0] !== '<') { this.log('[打开] 不是 XML 文本，已跳过 ' + r.name + '（首字符 ' + JSON.stringify(t[0]) + '）'); skip++; continue; }
+      if (!/<svg[\s>]/i.test(t)) { this.log('[打开] 未找到 <svg> 根元素，已跳过 ' + r.name); skip++; continue; }
+      last = this.addLocal(r.name, r.text);
+      ok++;
+      this.log('[打开] ' + r.name + '  ' + r.text.length + 'B → ' + this.samples[last].id);
+    }
+    if (last < 0) { this.log('[打开] 本批 ' + arr.length + ' 个文件均不可用（跳过 ' + skip + '）'); return; }
+    await this.select(last);
+  },
+
+  /* 同名文件重复打开 → 原地覆盖，不产生重复条目；不同文件撞 id 才追加序号 */
+  addLocal(name, text) {
+    const raw = String(name || 'dropped.svg');
+    const base = this.stripExt(raw);
+    let id = 'local-' + base.replace(/[^\w\u4e00-\u9fa5.-]+/g, '_');
+    const dup = this.samples.findIndex(s => s.local && s.fileName === raw);
+    if (dup < 0 && this.samples.some(s => s.local && s.id === id)) id += '-' + (++this.localSeq);
+    const s = {
+      id, name: base, fileName: raw,
+      sub: '本地文件 · ' + text.length + ' 字节 · 仅内存',
+      dialect: 'raw', recipe: 'local', seed: 0,
+      defects: [], injected: [],
+      svg: text, expectClean: false, local: true, real: false
+    };
+    let idx;
+    if (dup >= 0) { idx = dup; this.samples[dup] = s; }
+    else { idx = this.samples.push(s) - 1; }
+    this.renderSampleList();
+    this.buildSampleOptions();
+    this.markLocal();
+    return idx;
+  },
+
+  wire() {
+    this.$('tabs').addEventListener('click', e => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      this.setView(b.dataset.v);
+    });
+    this.$('btnFix').onclick = () => this.run('beautify');
+    this.$('btnPreview').onclick = () => this.run('dryrun');
+    this.$('btnReset').onclick = () => this.select(this.cur, true);
+    this.$('btnExport').onclick = () => this.exportSvg();
+    this.$('selSample').onchange = e => this.select(parseInt(e.target.value, 10));
+    this.$('selStrategy').onchange = () => this.maybeReplan();
+    this.$('selZoom').onchange = e => { this.zoomSel = e.target.value; this.applyZoom(); };
+
+    /* ---- 打开本地 SVG：按钮 / 文件选择器 / 拖拽 / Ctrl·Cmd+O 四条入口 ---- */
+    this.$('btnOpen').onclick = () => this.pickLocal();
+    this.$('fileInput').onchange = e => { const f = e.target.files; if (f && f.length) this.openFiles(f); };
+    this.wireDnD();
+
+    /* ---- 编辑模式：工具条 / 属性面板 / 快捷键 ---- */
+    this.wireEdit();
+    /* ---- 美化改动清单：勾选约束 ---- */
+    this.wireOps();
+
+    document.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && String(e.key).toLowerCase() === 'o') { e.preventDefault(); this.pickLocal(); }
+    });
+
+    window.addEventListener('resize', () => { this.applyZoom(); this.draw(); });
+
+    /* 缩放 >「适应」时画布会超出容器，#host 转为可滚动（Runtime.relayout 刻意把
+     * 根视口取 max(容器, 内容×zoom)，避免负位移造成滚不到的盲区）。
+     * 而叠加层是按「绘制那一刻根元素的屏幕矩形」对齐的（Views.sync），
+     * 滚动后这个矩形已经变了 —— 不重画就会错位。用 rAF 合并连发事件。 */
+    this.host.addEventListener('scroll', () => {
+      if (this._scrollRaf) return;
+      this._scrollRaf = requestAnimationFrame(() => {
+        this._scrollRaf = 0;
+        if (!this.editing && this.view !== 'original') this.draw();
+      });
+    }, { passive: true });
+  },
+
+  /* 拖拽落点：既支持系统文件（dataTransfer.files），也支持从编辑器拖来的一段 SVG 文本 */
+  wireDnD() {
+    const st = this.stage;
+    if (!st) return;
+    let depth = 0;
+    const hasFiles = dt => !!dt && Array.prototype.indexOf.call(dt.types || [], 'Files') >= 0;
+    st.addEventListener('dragenter', e => {
+      e.preventDefault();
+      if (!hasFiles(e.dataTransfer)) return;
+      depth++; st.classList.add('dropping');
+    });
+    st.addEventListener('dragover', e => { if (hasFiles(e.dataTransfer)) e.preventDefault(); });
+    st.addEventListener('dragleave', e => {
+      if (!hasFiles(e.dataTransfer)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) st.classList.remove('dropping');
+    });
+    st.addEventListener('drop', e => {
+      e.preventDefault(); depth = 0; st.classList.remove('dropping');
+      const dt = e.dataTransfer; if (!dt) return;
+      if (hasFiles(dt) && dt.files && dt.files.length) { this.openFiles(dt.files); return; }
+      const t = dt.getData('text/plain') || dt.getData('text');
+      if (t) this.openFiles([{ name: 'dropped.svg', text: t }]);
+      else this.log('[拖拽] 未识别的内容类型');
+    });
+    /* 拖到窗口其余位置时不要让它导航到该文件 */
+    window.addEventListener('dragover', e => e.preventDefault());
+    window.addEventListener('drop', e => e.preventDefault());
+  },
+
+  maybeReplan() { if (this.MODE === 'dryrun' && this.lastResult) this.run('dryrun'); },
+
+  /* ------------------------------- 载入样例 ------------------------------- */
+  async select(i, keepStrategy) {
+    if (i < 0 || i >= this.samples.length) return;
+    this.cur = i;
+    const s = this.samples[i];
+    const sel = this.$('selSample');
+    if (sel.options.length !== this.samples.length) this.buildSampleOptions();
+    sel.value = String(i);
+    this.samples.forEach(x => x.__el && x.__el.classList.remove('on'));
+    s.__el && s.__el.classList.add('on');
+    try { s.__el && s.__el.scrollIntoView({ block: 'nearest' }); } catch (e) { /* 老浏览器忽略 */ }
+    /* 三种来源给出不同提示：本地文件（内存态）/ 标定域外的真实图 / 内置缺陷样例 */
+    this.$('sampMeta').innerHTML = s.local
+      ? `<b>${s.name}</b><br>${s.sub}<br><span style="color:var(--acc2)">◈ 本地文件：只读打开，磁盘上的原文件不会被改动。「一键美化」改的是内存工作副本，点「导出 SVG」另存结果。</span>`
+      : (s.real
+        ? `<b>${s.name}</b><br>${s.sub}<br><span style="color:var(--warn)">⚠ 该图分数 58~70 属标定域外（1920×1080 幻灯片式排版），本产品对它只保证「不越改越丑」。</span>`
+        : `<b>${s.name}</b><br>${s.sub}`);
+
+    const st = Date.now();
+    const ld = Runtime.load(s.svg);
+    if (!ld.ok) { this.log('[载入失败] ' + s.id + ': ' + ld.err); return; }
+    this.MODE = 'beautify'; this.lastResult = null; this.propOps = [];
+    /* 换样例 = 换一整套 op，勾选状态必须清空：留着上一份的 signature 不仅无意义，
+     * 还可能因为元素 id 恰好重名而让新图里的同类项被误取消。 */
+    this.opState.clear();
+    this.paintOps([]);
+    this.refresh(); this.applyZoom();
+    this.draw();
+    /* 内容被整体替换：编辑层的基线与轨迹必须重置，否则 Δ 会跨样例累积 */
+    Editor.reset(Runtime);
+    if (this.editing) { this.paintEdit(); this.paintLiveScore(); }
+    this.log(`[载入] ${s.id}  ${ld.w}×${ld.h}${ld.normalized ? ' (已规范化尺寸)' : ''}  ${Date.now() - st}ms`);
+    this.paintLedger(null); this.paintDec(null);
+  },
+
+  /* 重新构建 IR + 分析（只读，不改 DOM） */
+  refresh() {
+    this.ir = IR.build(Runtime, {});
+    this.an = this.ir.ok ? Analyzer.run(this.ir, {}) : null;
+    this.paintQuality();
+    this.paintIssues();
+    const s = this.samples[this.cur];
+    if (s && s.__sc && this.an) {
+      s.__sc.textContent = nf(this.an.score, 1);
+      s.__sc.className = 'sc ' + (this.an.score >= 99.5 ? 'good' : (this.an.score < 90 ? 'bad' : ''));
+    }
+    this.$('statBadge').textContent = this.an
+      ? `${nf(this.an.score, 2)} 分 · ${this.an.issues.length} issue`
+      : '分析失败';
+    return this.an;
+  },
+
+  /* ------------------------------- 缩放 ------------------------------- */
+  applyZoom() {
+    const cw = (this.ir && this.ir.canvas.w) || Runtime.lastW || 800;
+    const ch = (this.ir && this.ir.canvas.h) || Runtime.lastH || 600;
+    const box = this.stage.getBoundingClientRect();
+    const availW = Math.max(120, box.width - 24), availH = Math.max(120, box.height - 24);
+    let z;
+    if (this.zoomSel === 'fit') z = Math.min(availW / cw, availH / ch);
+    else z = parseFloat(this.zoomSel);
+    z = clamp(z || 1, 0.1, 8);
+    this.zoom = r2(z);
+    Runtime.setZoom(this.zoom);
+    /* 缩放后根元素屏幕矩形变了，叠加层必须重新对齐 */
+    if (this.view !== 'original') this.draw();
+    this.$('viewInfo').textContent = 'zoom ' + nf(this.zoom) +
+      ' · L' + (this.zoom < 0.5 ? 1 : (this.zoom <= 2.0 ? 2 : 3));
+  },
+
+  /* ------------------------------- 四视图 ------------------------------- */
+  setView(v) {
+    this.view = v;
+    for (const b of this.$('tabs').querySelectorAll('button[data-v]')) b.classList.toggle('on', b.dataset.v === v);
+    this.draw();
+  },
+
+  draw() {
+    if (!this.ir || !this.ir.ok) return;
+    /* ★「提案」视图只画**已勾选**的项：取消勾选后叠加层同步消失。
+     *   否则「勾选」只是清单里的文字游戏，用户无法在画布上核对。 */
+    const ops = (this.view === 'proposed' && this.propOps && this.propOps.length && this.opState.size)
+      ? this.propOps.filter(o => this.opState.get(this.opSig(o)) !== false)
+      : this.propOps;
+    const r = Views.render(this.view, {
+      rt: Runtime, ir: this.ir, an: this.an, ops, zoom: this.zoom, host: this.stage
+    });
+    this.viewInfo = r || {};
+    if (r) {
+      let extra = '';
+      if (r.level) extra = ' · L' + r.level;
+      if (r.drawn !== undefined) extra += ' · ' + r.drawn + ' 图元';
+      if (this.view === 'diagnostic') extra += ' · ' + (r.issues === undefined ? '—' : r.issues) + ' issue';
+      this.$('viewInfo').textContent = (this.view === 'original' ? '无叠加' : '叠加' + extra) +
+        ' · zoom ' + nf(this.zoom);
+    }
+  },
+
+  /* --------------------------- 美化 / 仅预览 --------------------------- */
+  async run(mode) {
+    if (this.busy) return;
+    const s = this.samples[this.cur]; if (!s) return;
+    this.busy = true;
+    const btn = this.$('btnFix'); const old = btn.textContent;
+    btn.disabled = true; btn.textContent = mode === 'beautify' ? '美化中…' : '预览中…';
+    const strategy = this.$('selStrategy').value;
+    const deny = this.opDenySet();
+    const t0 = Date.now();
+    try {
+      /* 每次运行都从「原始 SVG 文本」起步，避免上一次结果污染基线 */
+      const ld = Runtime.load(s.svg);
+      if (!ld.ok) throw new Error('载入失败: ' + ld.err);
+      const rec = await Pipeline.beautify(Runtime, s.svg, {
+        strategy, temp: 3, maxRounds: 4, sopt: {},
+        dryRun: mode === 'dryrun',
+        /* ★ 勾选约束（#3）：把「取消勾选」的项作为 deny 交给管线，
+         *   由它在 batch 组装阶段过滤 —— 被取消的项根本不执行。 */
+        opAllow: deny.length ? (op => deny.indexOf(this.opSig(op)) < 0) : null
+      });
+      this.MODE = mode;
+      this.lastResult = rec;
+      if (!rec.ok) throw new Error(rec.err || 'beautify 失败');
+
+      this.ir = IR.build(Runtime, {});
+      this.an = this.ir.ok ? Analyzer.run(this.ir, {}) : null;
+      Editor.reset(Runtime);   /* 美化会整篇重写内容，编辑基线随之重置 */
+
+      if (mode === 'dryrun') {
+        this.propOps = (rec.ops && rec.ops.ops) ? rec.ops.ops : [];
+        this.paintQualityDry(rec);
+        this.setView('proposed');
+      } else {
+        this.propOps = (rec.ops && rec.ops.ops) ? rec.ops.ops : [];
+        this.paintQuality(rec);
+        this.draw();
+      }
+      this.paintIssues();
+      this.paintDec(rec);
+      this.paintLedger(rec);
+      this.paintOps(this.propOps);
+
+      const s2 = this.samples[this.cur];
+      if (s2 && s2.__sc && this.an) {
+        s2.__sc.textContent = nf(this.an.score, 1);
+        s2.__sc.className = 'sc ' + (this.an.score >= 99.5 ? 'good' : (this.an.score < 90 ? 'bad' : ''));
+      }
+      this.$('statBadge').textContent = `${nf(rec.before.score, 2)} → ${nf(rec.after.score, 2)}  (Δ${nf(rec.delta, 2)})  ${Date.now() - t0}ms`;
+      this.log(`[${mode}] ${s.id} 策略=${strategy} ${nf(rec.before.score, 1)}→${nf(rec.after.score, 1)} (Δ${nf(rec.delta, 2)}) `
+        + `轮=${rec.ledger.length} op=${(rec.proposed || []).length || (rec.ops && rec.ops.ops ? rec.ops.ops.length : 0)} ${Date.now() - t0}ms`
+        + (deny.length ? ` · 已按清单取消 ${deny.length} 项` : ''));
+    } catch (e) {
+      this.log('[错误] ' + (e && e.message));
+      this.$('statBadge').textContent = '运行失败';
+    } finally {
+      this.busy = false; btn.disabled = false; btn.textContent = old;
+    }
+  },
+
+  /* ============================== 编辑模式 ==============================
+   * 参考件是官方 svg-edit 的演示页（dist/editor/index.html），但那条路线要内联
+   * 2.22 MB 的 iife-Editor.js + 261 个图标，而且是独立 App，与本页的质量评分
+   * 闭环割裂。内核（@svgedit/svgcanvas@7.4.2）本仓库早已 vendor，所以这里只接线。
+   * 与官方编辑器的差别：**每改一步都重算质量分**，改好改坏立刻可见。
+   * ====================================================================*/
+  toggleEdit() {
+    if (!this.editing) {
+      if (!Editor.enable(Runtime)) { this.log('[编辑] 进入失败: ' + (Editor.lastErr || '未知')); return; }
+      this.editing = true;
+      this.$('btnEdit').textContent = '退出编辑';
+      this.$('btnEdit').className = 'primary';
+      this.$('editbar').classList.add('on');
+      this.$('editPanel').classList.add('on');
+      this.setView('original');           /* 编辑时先摘掉叠加层，免得挡视线 */
+      this.log('[编辑] 进入编辑模式 · 基线 ' + nf(Editor.entryScore, 2) + ' 分 · 画布开始接收指针事件');
+      this.paintEdit();
+      this.paintLiveScore();
+    } else {
+      const st = Editor.stats();
+      Editor.disable(Runtime);
+      this.editing = false;
+      this.$('btnEdit').textContent = '编辑';
+      this.$('btnEdit').className = 'ghost';
+      this.$('editbar').classList.remove('on');
+      this.$('editPanel').classList.remove('on');
+      this.log('[编辑] 退出编辑模式 · 净变化 Δ' + (st.total > 0 ? '+' : '') + nf(st.total, 2)
+        + ' · ' + st.changes + ' 次改动（内容保留，可继续导出或重跑美化）');
+      this.draw();
+      this.paintEdit();
+    }
+  },
+
+  /* 编辑层回调：sel（选择变了）/ track（记下一条变更）/ mode */
+  onEditor(what, extra) {
+    if (what === 'sel') {
+      this.paintEdit();
+      /* svgcanvas 的抓手是 'selected' 事件**之后**才渲染的：同一帧里量渲染盒会得到 0，
+       * 于是面板上写着「可见手柄 0」而画面上明明有 9 个（实测 a5）。下一帧补画一次。 */
+      if (this._selRaf) cancelAnimationFrame(this._selRaf);
+      this._selRaf = requestAnimationFrame(() => { this._selRaf = 0; this.paintEdit(); });
+      return;
+    }
+    if (what === 'mode') { this.paintEdit(); return; }
+    if (what === 'track') {
+      if (Editor.ir && Editor.ir.ok) { this.ir = Editor.ir; this.an = Editor.an; }
+      this.paintEdit();
+      this.paintIssues();
+      this.paintLiveScore();
+      if (extra) this.log('[编辑] ' + extra.label + ' → ' + nf(extra.score, 2)
+        + ' (Δ' + (extra.delta > 0 ? '+' : '') + nf(extra.delta, 2) + ')  sha=' + extra.sha);
+    }
+  },
+
+  /* 编辑过程中把实时分数写回统计徽标与左栏 */
+  paintLiveScore() {
+    if (!this.editing) return;
+    const st = Editor.stats();
+    this.$('statBadge').textContent = '编辑中 ' + nf(st.entryScore, 2) + ' → ' + nf(st.curScore, 2)
+      + '  (Δ' + (st.total > 0 ? '+' : '') + nf(st.total, 2) + ')  ' + st.changes + ' 次改动';
+    const s = this.samples[this.cur];
+    if (s && s.__sc && st.curScore !== null && st.curScore !== undefined) {
+      s.__sc.textContent = nf(st.curScore, 1);
+      s.__sc.className = 'sc ' + (st.curScore >= 99.5 ? 'good' : (st.curScore < 90 ? 'bad' : ''));
+    }
+  },
+
+  paintEdit() {
+    const st = Editor.stats();
+    const hasSel = st.nSel > 0;
+    const p = hasSel ? Editor.props() : null;
+    const si = this.$('selInfo');
+    /* Ctrl 多选的能力说明常驻 title —— 否则画布上没有任何地方告诉用户「可以多选」
+     * （svgcanvas 原生的累加选择是 Shift，Ctrl 是本层新加的产品语义）。 */
+    si.title = Editor.on
+      ? 'Ctrl（Mac 为 ⌘）+点击：加选元素；再点已选中的元素：把它移出选择；点空白：保持当前选择。'
+        + '多选之后改颜色 / 字号 / 线宽 / 位移，会一次作用于全部选中元素，并只记一条撤销命令。'
+      : '';
+    if (!hasSel) {
+      si.className = 'none';
+      si.textContent = Editor.on ? '未选中元素 · 在画布上点击选择（Ctrl+点击可多选）' : '未进入编辑模式';
+    } else {
+      si.className = '';
+      si.textContent = st.selTag + (st.selId ? '#' + st.selId : '')
+        + (st.nSel > 1 ? ' 等 ' + st.nSel + ' 个（Ctrl 多选）' : '')
+        + (p && p.rot !== null ? '  rot ' + nf(p.rot, 1) + '°' : '')
+        + (st.nFontTgt ? '  · 可改文字 ' + st.nFontTgt : '')
+        + '  · 可见手柄 ' + st.grips;
+    }
+    /* 属性回填：只在值确实不同时写，避免打断正在输入的用户。
+     * ★ 多选（#3）时先把上一轮的「多值」虚线标记清掉，再按本次选择重设 ——
+     *   否则从多选切回单选（或多选集合变了）会残留虚线框，把单值元素误标成多值。 */
+    for (const id of ['eFill', 'eStroke', 'eSW', 'eFS']) {
+      const el = this.$(id); if (el) el.classList.remove('mixed');
+    }
+    if (p) {
+      const setIf = (id, v) => { const el = this.$(id); if (el && v !== null && v !== undefined && String(el.value) !== String(v)) el.value = v; };
+      const mix = (id, on) => { if (on) { const el = this.$(id); if (el) el.classList.add('mixed'); } };
+      const mx = p.multi;
+      if (mx) {
+        /* 多选：值一致 → 填该值；不一致 → 填代表值（颜色取首值、线宽/字号取多数派）
+         * 并把输入框标成 mixed，如实表达「这不代表全部选中元素」。 */
+        if (mx.fillHex) setIf('eFill', mx.fillHex);
+        mix('eFill', mx.fillMixed);
+        if (mx.strokeHex) setIf('eStroke', mx.strokeHex);
+        mix('eStroke', mx.strokeMixed);
+        if (mx.sw !== null) setIf('eSW', r2(mx.sw));
+        mix('eSW', mx.swMixed);
+        mix('eFS', mx.fsMixed);
+      } else {
+        if (p.eff.fillHex) setIf('eFill', p.eff.fillHex);
+        if (p.eff.strokeHex) setIf('eStroke', p.eff.strokeHex);
+        if (p.eff.sw !== null) setIf('eSW', r2(p.eff.sw));
+      }
+      /* ★ 字号回填必须用「可改文本的多数派字号」st.effFontSize，不能用 sel[0] 的
+       *   computed font-size：选中 <g> 时后者是继承值（real-01 实测 22px），
+       *   与卡内实际文字无关，面板填错数 → 用户按这个数改反而改坏。
+       *   多选时它同样是跨全部选中元素（含 g 内后代）的多数派。 */
+      if (st.effFontSize !== null && st.effFontSize !== undefined) setIf('eFS', r2(st.effFontSize));
+      if (p.isText) setIf('eText', p.text);
+      if (p.rot !== null) setIf('eRot', r2(p.rot));
+    }
+    /* 可用性 */
+    const needSel = ['eFill', 'eStroke', 'eSW', 'eL', 'eR', 'eUp', 'eDn', 'eRot', 'eRotGo',
+      'eFlipH', 'eFlipV', 'eGroup', 'eLayerUp', 'eLayerDn', 'eTop', 'eBottom', 'eClone', 'eDel',
+      'eDown1', 'eUp1', 'eSame'];
+    for (const id of needSel) { const el = this.$(id); if (el) el.disabled = !hasSel; }
+    /* ★ 文本类属性的启停判据 = 「能改到几个文本」（含选中 <g> 内部的 descendants），
+     *   不再要求「顶层选中项就是 text」。
+     *   实测 real-01：点画布上的「业务数据」→ 选中 g#svg_9（内含 10 个 text），
+     *   旧判据 p.isText=false → 字号/加粗/斜体输入框全部 disabled，
+     *   用户看到的就是「选中了元素却改不了字号」（反馈 #1）。
+     *   内核侧已按 svgcanvas 给 stroke-width 写的下钻手法补齐（09_editor.js#_textProp），
+     *   这里同步放开。 */
+    const noFont = !hasSel || !st.nFontTgt;
+    for (const id of ['eBold', 'eItalic', 'eFS']) { const el = this.$(id); if (el) el.disabled = noFont; }
+    /* 文本内容仍限顶层 text/tspan —— setText 是本层唯一直接写 textContent 的路径，
+     * 对 <g> 执行会把子元素整批抹掉（09_editor.js#setText 有实测记录），所以不放宽。 */
+    const tEl = this.$('eText'); if (tEl) tEl.disabled = !hasSel || !(p && p.isText);
+    const aEl = this.$('eAlign'); if (aEl) aEl.disabled = !hasSel;
+    const uEl = this.$('eUngroup'); if (uEl) uEl.disabled = !hasSel || !(p && p.isGroup);
+    const unEl = this.$('eUndo'); if (unEl) unEl.disabled = st.undoSize <= 0;
+    const reEl = this.$('eRedo'); if (reEl) reEl.disabled = st.redoSize <= 0;
+    if (!this.editing) return;
+    /* 右栏台账 */
+    this.$('eSB').textContent = st.entryScore === null ? '—' : nf(st.entryScore, 2);
+    this.$('eSA').textContent = st.curScore === null ? '—' : nf(st.curScore, 2);
+    const d = this.$('eSD');
+    d.textContent = (st.total > 0 ? '+' : '') + nf(st.total, 2);
+    d.className = 'd ' + (st.total > 0.005 ? '' : (st.total < -0.005 ? 'dn' : 'zero'));
+    /* 选中摘要：把「可改文字数」显式写出来，让用户知道字号为什么可用/不可用 */
+    this.$('eSelK').textContent = hasSel
+      ? (st.selTag + (st.selId ? '#' + st.selId : '')
+         + (st.nSel > 1 ? ' 等 ' + st.nSel + ' 个（一次改全部）' : '')
+         + (st.nFontTgt ? ' · 文字 ' + st.nFontTgt : ' · 无文字'))
+      : '—';
+    /* 多选时元素框 = 选区并集（p.multi.box）；单选时 = 该元素自己的框 */
+    const boxB = (p && p.multi && p.multi.box) ? p.multi.box : (p ? p.bbox : null);
+    this.$('eBox').textContent = boxB
+      ? `x${boxB.x} y${boxB.y} ${boxB.w}×${boxB.h}` + (p && p.multi ? '（' + p.multi.n + ' 元素并集）' : '')
+      : '—';
+    const iss = hasSel ? Editor.selIssues() : [];
+    this.$('eIss').textContent = hasSel
+      ? (iss.length ? iss.map(x => x.type + '(' + x.priority + ')').join(' / ') : '无')
+      : '—';
+    this.$('eUndoSt').textContent = st.undoSize + ' / ' + st.redoSize
+      + (st.undoLabel ? '  ↶ ' + String(st.undoLabel).slice(0, 16) : '');
+    this.$('nEdit').textContent = st.changes ? st.changes + ' 次改动' : '尚未改动';
+    const box = this.$('eTrack'); box.innerHTML = '';
+    /* 清单汇总：已应用 / 已取消 / 可回退步数（用户要的「可取消、可回退」一眼可见） */
+    const sumEl = this.$('eSum');
+    if (sumEl) {
+      const done = Editor.track.filter(r => r.cancelled).length;
+      const live = Editor.track.length - done;
+      sumEl.textContent = Editor.track.length
+        ? (live + ' 项已应用' + (done ? ' · ' + done + ' 项已取消' : '') + ' · 勾选框=取消该步，点行=回退到该步')
+        : '';
+    }
+    const clr = this.$('eClr');
+    if (clr) clr.disabled = !Editor.track.length;
+    if (!Editor.track.length) {
+      box.innerHTML = '<div class="empty">改动一次即可看到改动清单（标签 → 分数 → 单步 Δ）。勾选框可取消该步，点行可回退到该步之后。</div>';
+    } else {
+      for (const r of Editor.track.slice(-12).reverse()) {
+        const row = document.createElement('div'); row.className = 'etrk' + (r.cancelled ? ' done' : '');
+        /* 勾选框 = 取消该步（可取消）：取消后行变灰划掉 */
+        const chk = Editor.canCancel(r.n);
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.className = 'cb'; cb.checked = !r.cancelled;
+        cb.disabled = !chk.ok;
+        cb.title = r.cancelled ? '该步已取消'
+          : (chk.ok ? (chk.mode === 'rollback'
+              ? '取消该步（含结构变更，将整段回退到该步之前，其后 ' + chk.later + ' 步一并回退）'
+              : '取消该步（定向还原 ' + chk.n + ' 处属性，后续步骤不受影响）')
+            : '该步无法单独取消');
+        cb.onclick = (ev) => {
+          ev.stopPropagation();
+          const res = Editor.cancelStep(r.n);
+          if (!res.ok) {
+            this.log('[编辑] ' + (res.err || '取消失败'));
+            cb.checked = !r.cancelled;
+            return;
+          }
+          if (res.mode === 'rollback') {
+            this.log('[编辑] 取消 #' + r.n + '（' + res.label + '）· 含结构变更 → 整段回退，其后 ' + res.later + ' 步一并回退 · undo 栈 ' + Editor.undoSize());
+          } else {
+            this.log('[编辑] 取消 #' + r.n + '（' + res.label + '）· 定向还原 ' + res.reverted + ' 处属性'
+              + (res.skipped ? '，跳过 ' + res.skipped + ' 处（已被后续改动覆盖）' : '') + ' · undo 栈 ' + Editor.undoSize());
+          }
+          this.paintEdit(); this.paintLiveScore(); this.paintIssues();
+          if (Editor.ir && Editor.ir.ok) { this.ir = Editor.ir; this.an = Editor.an; this.draw(); }
+        };
+        row.appendChild(cb);
+        const n = document.createElement('span'); n.className = 'n'; n.textContent = '#' + r.n;
+        const l = document.createElement('span'); l.className = 'l'; l.textContent = r.label;
+        l.title = r.label + '  sha=' + r.sha + '  undo=' + r.undo + '  画布=' + (r.canvas || '—')
+          + '  改动 ' + (r.diff ? r.diff.length : 0) + ' 处' + (r.struct ? '（含结构变更）' : '');
+        const s = document.createElement('span'); s.className = 's'; s.textContent = nf(r.score, 2);
+        s.style.color = r.delta > 0.005 ? 'var(--ok)' : (r.delta < -0.005 ? 'var(--bad)' : 'var(--tx2)');
+        const dd = document.createElement('span');
+        dd.className = 'd ' + (r.delta > 0.005 ? 'up' : (r.delta < -0.005 ? 'dn' : ''));
+        dd.textContent = (r.delta > 0 ? '+' : '') + nf(r.delta, 2);
+        row.appendChild(n); row.appendChild(l);
+        if (r.struct) { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '结构'; row.appendChild(tg); }
+        row.appendChild(s); row.appendChild(dd);
+        /* ★ 点击回退（#5）：只有真能回退的行才加手型与提示，
+         *   否则会出现「点了没反应」的假 affordance（svgcanvas 的 undo 栈
+         *   可能已被外部动作推进，例如换样例后重置）。 */
+        const can = Editor.canUndoTo(r.n);
+        if (can) {
+          row.classList.add('clickable');
+          const u = document.createElement('span'); u.className = 'u'; u.textContent = '↶';
+          row.appendChild(u);
+          row.title = '点击回退到 #' + r.n + '「' + r.label + '」之后的状态';
+          row.onclick = () => {
+            const res = Editor.undoTo(r.n);
+            if (!res.ok && res.err) this.log('[编辑] ' + res.err);
+            else this.log('[编辑] 回退到 #' + r.n + ' ' + r.label + ' · undo 栈 ' + Editor.undoSize());
+            this.paintEdit(); this.paintLiveScore(); this.paintIssues();
+            if (Editor.ir && Editor.ir.ok) { this.ir = Editor.ir; this.an = Editor.an; this.draw(); }
+          };
+        } else {
+          row.title = r.label + '（已是当前状态，无可回退的改动）';
+        }
+        box.appendChild(row);
+      }
+    }
+  },
+
+  /* ========================= 美化改动清单（#3） =========================
+   * 诉求：一键美化的「修改项目」要给出列表，可逐条检查、可取消。
+   *
+   * 设计要点（都是为了让「勾选」真的能约束执行，而不是只做展示）：
+   *   1. 清单来源 = 上一次「仅预览」的 ops（预制计划的每一项，一条 issue 一组），
+   *      每项显示：策略 → 目标 → 为什么这么改（why 里带具体 px 缺口/偏移）。
+   *   2. 勾选状态存在 opState（signature → bool）而不是 DOM 上，
+   *      重绘（换样例、重跑预览）不丢；signature = strategy|label，
+   *      元素 id 在同一次运行内稳定，足以跨「预览 → 应用」对齐。
+   *   3. 应用时把「未勾选的 signature 集合」作为 deny 传给 Pipeline，
+   *      由它在 batch 组装阶段过滤 —— 被取消的项**根本不执行**，
+   *      因此也不会被 op 级门回滚、不会占用 owner、不会改变分数。
+   *   4. 未在 deny 里的 op 默认放行（fail-open）：重规划可能产出预览里
+   *      没出现的新 op，宁可让它们照常走原有的守卫/评分门，也不要因为
+   *      清单对不上而整体空转。
+   * ==================================================================== */
+  opSig(o) { return String(o.strategy || '') + '|' + String(o.label || ''); },
+
+  opDenySet() {
+    const out = [];
+    for (const [sig, on] of this.opState) if (!on) out.push(sig);
+    return out;
+  },
+
+  paintOps(ops) {
+    const panel = this.$('opPanel');
+    if (panel) panel.classList.add('on');
+    const box = this.$('opList');
+    this.propOps = ops || [];
+    if (!box) return;
+    box.innerHTML = '';
+    if (!this.propOps.length) {
+      box.innerHTML = '<div class="empty">按「仅预览」可列出将要执行的每一项改动，逐条勾选后再应用。</div>';
+      this.$('nOps').textContent = '—';
+      const ap0 = this.$('opApply'); if (ap0) ap0.disabled = true;
+      return;
+    }
+    /* 首次见到某项 → 默认勾选 */
+    for (const o of this.propOps) {
+      const sig = this.opSig(o);
+      if (!this.opState.has(sig)) this.opState.set(sig, true);
+    }
+    const byGroup = new Map();
+    for (const o of this.propOps) {
+      const k = String(o.strategy || '?') + ' · ' + String(o.issueType || '');
+      if (!byGroup.has(k)) byGroup.set(k, []);
+      byGroup.get(k).push(o);
+    }
+    for (const [k, list] of byGroup) {
+      const hd = document.createElement('div');
+      hd.className = 'kv';
+      hd.innerHTML = '<span class="k">' + k + '</span><span class="v">' + list.length + ' 项</span>';
+      box.appendChild(hd);
+      for (const o of list) {
+        const sig = this.opSig(o);
+        const row = document.createElement('div');
+        row.className = 'oprow' + (this.opState.get(sig) ? '' : ' off');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = !!this.opState.get(sig);
+        cb.onchange = () => {
+          this.opState.set(sig, cb.checked);
+          row.classList.toggle('off', !cb.checked);
+          this.paintOpCount();
+          /* 勾选状态即时反映到「提案」视图：取消的项不再画出来 */
+          if (this.view === 'proposed') this.draw();
+        };
+        const t = document.createElement('div'); t.className = 't';
+        const b = document.createElement('b'); b.textContent = o.label || (o.kind + ' ' + (o.target || ''));
+        const sp = document.createElement('span'); sp.textContent = o.why || '';
+        sp.title = (o.why || '') + (o.preview ? '  before=' + JSON.stringify(o.preview.before) + ' after=' + JSON.stringify(o.preview.after) : '');
+        t.appendChild(b); t.appendChild(sp);
+        row.appendChild(cb); row.appendChild(t);
+        box.appendChild(row);
+      }
+    }
+    this.paintOpCount();
+  },
+
+  paintOpCount() {
+    const n = this.$('nOps'), ap = this.$('opApply');
+    if (!this.propOps || !this.propOps.length) { if (n) n.textContent = '—'; if (ap) ap.disabled = true; return; }
+    const on = this.propOps.filter(o => this.opState.get(this.opSig(o))).length;
+    if (n) n.textContent = on + ' / ' + this.propOps.length + ' 已勾选';
+    if (ap) ap.disabled = on === 0 || this.busy;
+  },
+
+  wireOps() {
+    const g = id => this.$(id);
+    const setAll = v => { for (const o of (this.propOps || [])) this.opState.set(this.opSig(o), v); this.paintOps(this.propOps); };
+    if (g('opAll')) g('opAll').onclick = () => setAll(true);
+    if (g('opNone')) g('opNone').onclick = () => setAll(false);
+    if (g('opApply')) g('opApply').onclick = () => this.run('beautify');
+  },
+
+  wireEdit() {
+    const g = id => this.$(id);
+    g('btnEdit').onclick = () => this.toggleEdit();
+    /* 属性 */
+    g('eFill').oninput = e => { if (Editor.on && Editor.sel.length) Editor.setFill(e.target.value); };
+    g('eStroke').oninput = e => { if (Editor.on && Editor.sel.length) Editor.setStroke(e.target.value); };
+    g('eSW').onchange = e => Editor.setStrokeWidth(e.target.value);
+    g('eFS').onchange = e => Editor.setFontSize(e.target.value);
+    g('eText').onchange = e => Editor.setText(e.target.value);
+    g('eBold').onclick = () => { let b = false; try { b = !!Runtime.canvas.getBold(); } catch (e) { /* 忽略 */ } Editor.setBold(!b); };
+    g('eItalic').onclick = () => { let i = false; try { i = !!Runtime.canvas.getItalic(); } catch (e) { /* 忽略 */ } Editor.setItalic(!i); };
+    /* 层级下钻 / 上钻：点到的常是最外层分组，改内部文字要先下钻 */
+    g('eDown1').onclick = () => {
+      const r = Editor.selectDeeper();
+      if (!r.ok && r.err) this.log('[编辑] ' + r.err);
+      else this.log('[编辑] 选择下钻 → ' + Editor.sel.map(e => e.tagName + (e.id ? '#' + e.id : '')).join(','));
+      this.paintEdit();
+    };
+    g('eUp1').onclick = () => {
+      const r = Editor.selectParent();
+      if (!r.ok && r.err) this.log('[编辑] ' + r.err);
+      else this.log('[编辑] 选择上钻 → ' + Editor.sel.map(e => e.tagName + (e.id ? '#' + e.id : '')).join(','));
+      this.paintEdit();
+    };
+    /* 选同类（#3 便利入口）：一次选出与当前元素同类的全部元素 */
+    g('eSame').onclick = () => {
+      const r = Editor.selectSimilar();
+      if (!r.ok) this.log('[编辑] ' + r.err);
+      else this.log('[编辑] 选同类 → ' + r.n + ' 个（种子 ' + r.seed + '，候选 ' + r.of
+        + ' 个' + (r.text ? '，按同字号匹配' : '，按同 tag+相近宽高匹配') + '）');
+      this.paintEdit();
+    };
+    /* 改动清单：全部回退（把编辑改动整体退回到进入编辑模式时的状态） */
+    g('eClr').onclick = () => {
+      if (!Editor.track.length) return;
+      const r = Editor.cancelAll();
+      if (!r.ok) this.log('[编辑] ' + (r.err || '回退失败'));
+      else this.log('[编辑] 全部回退：撤销 ' + r.undone + ' 步 → 分数 ' + nf(r.score, 2)
+        + ' · 结构 ' + r.nodes + '/' + r.entryNodes
+        + (r.scoreSame && r.nodesSame
+            ? '（语义已回到基线' + (r.shaSame ? '' : '；XML 文本因属性顺序规范化而不同，非缺陷') + '）'
+            : '（未回到基线，见撤销栈）'));
+      this.paintEdit(); this.paintLiveScore(); this.paintIssues();
+      if (Editor.ir && Editor.ir.ok) { this.ir = Editor.ir; this.an = Editor.an; this.draw(); }
+    };
+    /* 几何（2 个 SVG 用户单位/次） */
+    g('eL').onclick = () => Editor.move(-2, 0);
+    g('eR').onclick = () => Editor.move(2, 0);
+    g('eUp').onclick = () => Editor.move(0, -2);
+    g('eDn').onclick = () => Editor.move(0, 2);
+    g('eRotGo').onclick = () => Editor.rotate(g('eRot').value);
+    g('eFlipH').onclick = () => Editor.flip(true, false);
+    g('eFlipV').onclick = () => Editor.flip(false, true);
+    g('eAlign').onchange = e => {
+      const v = e.target.value;
+      if (!v) return;
+      /* 多选时相对选区，单选时相对画布 —— 这是 svgcanvas 的 relativeTo 语义 */
+      Editor.align(v, Editor.sel.length > 1 ? 'selected' : 'page');
+      e.target.value = '';
+    };
+    /* 结构 / 层级 */
+    g('eGroup').onclick = () => Editor.group();
+    g('eUngroup').onclick = () => Editor.ungroup();
+    g('eLayerUp').onclick = () => Editor.up();
+    g('eLayerDn').onclick = () => Editor.down();
+    g('eTop').onclick = () => Editor.toTop();
+    g('eBottom').onclick = () => Editor.toBottom();
+    g('eClone').onclick = () => Editor.clone();
+    g('eDel').onclick = () => Editor.del();
+    /* 撤销 / 重做 */
+    g('eUndo').onclick = () => Editor.undo();
+    g('eRedo').onclick = () => Editor.redo();
+    /* 快捷键：Ctrl/Cmd+Z 撤销、+Shift+Z / +Y 重做、Delete 删除（仅编辑模式生效） */
+    document.addEventListener('keydown', e => {
+      if (!Editor.on) return;
+      const k = String(e.key).toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); e.shiftKey ? Editor.redo() : Editor.undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); Editor.redo(); return; }
+      if ((k === 'delete' || k === 'backspace') && Editor.sel.length) {
+        const a = document.activeElement;
+        if (a && (a.tagName === 'INPUT' || a.tagName === 'SELECT')) return;   /* 别抢输入框的键 */
+        e.preventDefault(); Editor.del();
+      }
+    });
+  },
+
+  exportSvg() {
+    const svg = Runtime.exportString();
+    if (!svg) { this.log('[导出] 空内容'); return ''; }
+    const sc = this.samples[this.cur] || { id: 'svg' };
+    const stem = (sc.local && sc.fileName ? this.stripExt(sc.fileName) : sc.id).replace(/[^\w\u4e00-\u9fa5.-]+/g, '_');
+    const name = stem + '.beautified.svg';
+    try {
+      const a = document.createElement('a');
+      a.href = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+      a.download = name; a.click();
+    } catch (e) { /* file:// 下部分浏览器拦截下载，不影响内存态 */ }
+    this.log(`[导出] ${name}  ${svg.length}B  sha256=${sha256Hex(svg).slice(0, 16)}…`);
+    return svg;
+  },
+
+  /* ------------------------------- 面板 ------------------------------- */
+  paintQuality(rec) {
+    const a = this.an || (rec && rec.before) || null;
+    const b = rec ? rec.before : a;
+    const after = rec ? rec.after : null;
+    this.paintScore(b ? b.score : null, after ? after.score : null, rec ? rec.delta : null);
+    this.paintBars(b ? b.metrics : (a ? a.metrics : null), after ? after.metrics : (a ? a.metrics : null));
+    if (a) {
+      this.$('kCanvas').textContent = `${a.canvas ? a.canvas.w + '×' + a.canvas.h : (this.ir ? this.ir.canvas.w + '×' + this.ir.canvas.h : '—')}`;
+      const st = (after && after.stats) || (b && b.stats) || (this.ir && this.ir.stats) || {};
+      this.$('kStats').textContent = `${st.nodes || 0} 节点 / ${st.edges || 0} 边 / ${st.labels || 0} 标签 / ${st.groups || 0} 组`;
+      const r = (after && after.raw) || (b && b.raw) || {};
+      this.$('kRaw').textContent = `重合 ${r.overlap ?? 0} · 溢出 ${r.overflow ?? 0} · 失准 ${r.misalign ?? 0} · 间距 ${r.spacing ?? 0} · 交叉 ${r.crossing ?? 0}`;
+    }
+  },
+
+  /* 仅预览时 After 列展示「预计」值：dryRun 不落盘，after==before */
+  paintQualityDry(rec) {
+    this.paintScore(rec.before.score, null, null);
+    this.paintBars(rec.before.metrics, null);
+    this.$('kCanvas').textContent = this.ir ? `${this.ir.canvas.w}×${this.ir.canvas.h}` : '—';
+    this.$('kStats').textContent = `${rec.before.stats.nodes} 节点 / ${rec.before.stats.edges} 边 / ${rec.before.stats.labels} 标签 / ${rec.before.stats.groups} 组`;
+    const r = rec.before.raw || {};
+    this.$('kRaw').textContent = `重合 ${r.overlap} · 溢出 ${r.overflow} · 失准 ${r.misalign} · 间距 ${r.spacing} · 交叉 ${r.crossing}`;
+  },
+
+  paintScore(b, a, d) {
+    this.$('scB').textContent = b === null || b === undefined ? '—' : nf(b, 2);
+    this.$('scA').textContent = a === null || a === undefined ? '—' : nf(a, 2);
+    const el = this.$('scD');
+    if (d === null || d === undefined) { el.textContent = '仅预览'; el.className = 'd zero'; return; }
+    el.textContent = (d > 0 ? '+' : '') + nf(d, 2);
+    el.className = 'd ' + (d > 0.005 ? '' : (d < -0.005 ? 'dn' : 'zero'));
+  },
+
+  paintBars(bm, am) {
+    const box = this.$('metrics'); box.innerHTML = '';
+    if (!bm) return;
+    for (const k of Analyzer.METRIC_KEYS) {
+      const row = document.createElement('div'); row.className = 'm';
+      const kk = document.createElement('span'); kk.className = 'k'; kk.textContent = Analyzer.METRIC_CN[k];
+      const bar = document.createElement('span'); bar.className = 'bar';
+      if (am && Math.abs((am[k] || 0) - (bm[k] || 0)) > 0.005) {
+        const i1 = document.createElement('i'); i1.className = 'bf'; i1.style.width = clamp(bm[k], 0, 100) + '%';
+        const i2 = document.createElement('i'); i2.className = 'af'; i2.style.width = clamp(am[k], 0, 100) + '%';
+        bar.appendChild(i1); bar.appendChild(i2);
+      } else {
+        const i1 = document.createElement('i'); i1.style.width = clamp(bm[k], 0, 100) + '%';
+        bar.appendChild(i1);
+      }
+      const v = document.createElement('span'); v.className = 'v';
+      if (am) {
+        const d = r2(am[k] - bm[k]);
+        v.textContent = nf(bm[k], 0) + '→' + nf(am[k], 0);
+        if (d > 0.005) v.classList.add('up'); else if (d < -0.005) v.classList.add('dn');
+      } else v.textContent = nf(bm[k], 1);
+      row.appendChild(kk); row.appendChild(bar); row.appendChild(v);
+      box.appendChild(row);
+    }
+  },
+
+  paintIssues() {
+    const box = this.$('issues'); box.innerHTML = '';
+    const an = this.an;
+    if (!an) { box.innerHTML = '<div class="empty">分析失败</div>'; this.$('nIss').textContent = ''; return; }
+    this.$('nIss').textContent = an.issues.length + ' 项';
+    if (!an.issues.length) { box.innerHTML = '<div class="empty">未检出问题（该图已达当前打分器满分）</div>'; return; }
+    an.issues.forEach((it, i) => {
+      const d = document.createElement('div'); d.className = 'iss';
+      const no = document.createElement('span'); no.className = 'no p-' + it.priority; no.textContent = String(i + 1);
+      const bd = document.createElement('span'); bd.className = 'bd';
+      const ty = document.createElement('span'); ty.className = 'ty';
+      ty.textContent = it.type + '  ';
+      const pr = document.createElement('span'); pr.style.color = `var(--${it.priority === 'medium' ? 'med' : it.priority})`;
+      pr.style.fontSize = '10.5px'; pr.textContent = it.priority + (it.fixable === false ? ' · 不可自动修' : '');
+      ty.appendChild(pr);
+      const tg = document.createElement('span'); tg.className = 'tg';
+      tg.textContent = '→ ' + (it.targets || []).slice(0, 6).join(', ') + ((it.targets || []).length > 6 ? ` +${it.targets.length - 6}` : '');
+      const ev = document.createElement('span'); ev.className = 'ev';
+      ev.textContent = evText(it);
+      bd.appendChild(ty); bd.appendChild(document.createElement('br'));
+      bd.appendChild(tg); bd.appendChild(document.createElement('br'));
+      bd.appendChild(ev);
+      d.appendChild(no); d.appendChild(bd);
+      box.appendChild(d);
+    });
+  },
+
+  paintDec(rec) {
+    const box = this.$('dec'); box.innerHTML = '';
+    this.$('nDec').textContent = rec ? '' : '';
+    if (!rec) { box.innerHTML = '<div class="empty">需先执行「仅预览」或「一键美化」。</div>'; return; }
+    const led = (rec.ledger || []).filter(l => l.decisions && l.decisions.length);
+    if (!led.length) { box.innerHTML = '<div class="empty">本轮无决策记录。</div>'; return; }
+    const l = led[0];
+    const kv = (k, v) => {
+      const r = document.createElement('div'); r.className = 'kv';
+      const a = document.createElement('span'); a.className = 'k'; a.textContent = k;
+      const b = document.createElement('span'); b.className = 'v'; b.textContent = v;
+      r.appendChild(a); r.appendChild(b); box.appendChild(r);
+    };
+    kv('策略', rec.ledger[0].strategy || '—');
+    kv('阶段', rec.ledger[0].phase || '—');
+    kv('风格', String(rec.ledger[0].style || '—'));
+    kv('门禁', l.gate ? `relayout=${l.gate.relayout} safeAll=${l.gate.safeAll}` : '—');
+    this.$('nDec').textContent = l.decisions.length + ' 问';
+    const wrap = document.createElement('div'); wrap.style.marginTop = '4px';
+    for (const d of l.decisions) {
+      const p = document.createElement('span');
+      p.className = 'pill ' + (d.fallback ? 'fb' : (d.source || 'rule'));
+      p.textContent = d.q.replace(/^strategy_/, '') + '=' + d.choice
+        + (d.source && d.source !== 'rule' ? ' [' + d.source + ']' : '')
+        + (d.fallback ? ' ⇢回退' : '')
+        + (d.conf != null ? ' c=' + nf(d.conf, 2) : '')
+        + (d.spread != null ? ' s=' + nf(d.spread, 2) : '');
+      p.title = `rule=${d.ruleChoice} source=${d.source} fallback=${d.fallback} conf=${d.conf} spread=${d.spread}`;
+      wrap.appendChild(p);
+    }
+    box.appendChild(wrap);
+  },
+
+  paintLedger(rec) {
+    const box = this.$('ledger'); box.innerHTML = '';
+    if (!rec) { box.innerHTML = '<div class="empty">需先执行「一键美化」。</div>'; this.$('nLed').textContent = ''; return; }
+    const led = rec.ledger || [];
+    this.$('nLed').textContent = led.length + ' 轮 · ' + (rec.ms || 0) + 'ms';
+    if (rec.dryRun) {
+      const d = document.createElement('div'); d.className = 'empty';
+      d.textContent = '仅预览：未落盘。共 ' + ((rec.ops && rec.ops.ops) ? rec.ops.ops.length : 0) + ' 个待执行 op。';
+      box.appendChild(d);
+    }
+    for (const l of led) {
+      const d = document.createElement('div'); d.className = 'rd';
+      const hd = document.createElement('div'); hd.className = 'hd';
+      const t = document.createElement('span'); t.textContent = 'R' + l.round;
+      const g = document.createElement('span');
+      const gain = l.gain == null ? (l.after != null && l.before != null ? r2(l.after - l.before) : null) : l.gain;
+      g.className = 'g ' + (gain > 0.005 ? '' : (gain < -0.005 ? 'dn' : 'zero'));
+      g.textContent = (gain > 0 ? '+' : '') + nf(gain, 2);
+      const st = document.createElement('span'); st.className = 'k';
+      st.style.flex = '1 1 auto'; st.style.font = '10.5px/1.4 var(--mono)'; st.style.color = 'var(--tx3)';
+      st.textContent = (l.stopped ? '停止:' + l.stopped + ' ' : '')
+        + `收${l.accepted || 0}/拒${l.rejected || 0}`
+        + (l.tailN ? ` 尾${l.tailN}` : '')
+        + (l.commit ? ' ✓' : ' ✗回滚')
+        + (l.rolledBack ? ' ⟲' : '');
+      hd.appendChild(t); hd.appendChild(g); hd.appendChild(st);
+      d.appendChild(hd);
+
+      if (l.commit === false && l.reasons && l.reasons.length) {
+        const r = document.createElement('div'); r.className = 'st';
+        const s = document.createElement('span'); s.className = 'no'; s.textContent = '回滚';
+        const k = document.createElement('span'); k.className = 'k'; k.textContent = l.reasons.join(' / ');
+        r.appendChild(s); r.appendChild(k); d.appendChild(r);
+      }
+      for (const s of (l.steps || [])) {
+        const r = document.createElement('div'); r.className = 'st';
+        const a = document.createElement('span'); a.className = s.accept ? 'ok' : 'no';
+        a.textContent = s.accept ? '✓' : '✗';
+        const k = document.createElement('span'); k.className = 'k';
+        k.textContent = `[${s.issue || '?'}/${s.strategy || '?'}] ${String(s.target || '').slice(0, 46)}`
+          + ` Δ${nf(s.gain, 2)}` + (s.nOps > 1 ? ` ×${s.nOps}` : '')
+          + (s.tail && s.tail.length ? ' ·tail' + s.tail.reduce((x, y) => x + y.n, 0) : '')
+          + (s.accept ? '' : '  ← ' + (s.reasons || []).join(' / ').slice(0, 90));
+        k.title = k.textContent;
+        r.appendChild(a); r.appendChild(k); d.appendChild(r);
+      }
+      if (l.rejectedKeys && l.rejectedKeys.length) {
+        const r = document.createElement('div'); r.className = 'st';
+        const a = document.createElement('span'); a.className = 'no'; a.textContent = '黑名单';
+        const k = document.createElement('span'); k.className = 'k'; k.textContent = l.rejectedKeys.join('  ');
+        r.appendChild(a); r.appendChild(k); d.appendChild(r);
+      }
+      if (l.tail && (l.tail.n || l.tail.note)) {
+        const r = document.createElement('div'); r.className = 'st';
+        const a = document.createElement('span'); a.className = 'ok'; a.textContent = '收尾';
+        const k = document.createElement('span'); k.className = 'k';
+        k.textContent = l.tail.n
+          ? `${l.tail.n} op${l.tail.grow ? ' 扩画布→' + (l.tail.canvas ? l.tail.canvas.w + '×' + l.tail.canvas.h : '') : ''} dx=${nf(l.tail.dx)} dy=${nf(l.tail.dy)}`
+          : (l.tail.note || '无需收尾');
+        r.appendChild(a); r.appendChild(k); d.appendChild(r);
+      }
+      box.appendChild(d);
+    }
+  },
+
+  /* --------------------------- 自动化探针接口 --------------------------- */
+  snapshot() {
+    const svg = Runtime.exportString();
+    return {
+      sample: this.samples[this.cur] ? this.samples[this.cur].id : null,
+      sampleLocal: !!(this.samples[this.cur] && this.samples[this.cur].local),
+      nLocal: this.samples.filter(x => x.local).length,
+      nSamples: this.samples.length,
+      view: this.view,
+      zoom: this.zoom,
+      score: this.an ? this.an.score : null,
+      issues: this.an ? this.an.issues.length : null,
+      metrics: this.an ? this.an.metrics : null,
+      canvas: this.ir && this.ir.ok ? { w: this.ir.canvas.w, h: this.ir.canvas.h } : null,
+      nodes: this.ir && this.ir.ok ? this.ir.stats.nodes : null,
+      edges: this.ir && this.ir.ok ? this.ir.stats.edges : null,
+      ovl: !!this.stage.querySelector('svg.svgb-ovl'),
+      ovlChildren: this.stage.querySelector('svg.svgb-ovl') ? Views.ovl.firstChild ? Views.ovl.firstChild.childNodes.length : 0 : 0,
+      drawn: this.viewInfo ? this.viewInfo.drawn : null,
+      level: this.viewInfo ? this.viewInfo.level : null,
+      svgLen: svg.length,
+      sha256: sha256Hex(svg),
+      laya: { ok: !!Laya.ok, base: Laya.base },
+      log: this.logLines.slice(-6)
+    };
+  }
+};
+
+/* ------------------------------ 小工具 ------------------------------ */
+function nf2(v, d) { return nf(v, d === undefined ? 2 : d); }
+
+function evText(it) {
+  const e = it.evidence || {};
+  switch (it.type) {
+    case 'overlap': return `重叠 ${nf(e.overlapW, 1)}×${nf(e.overlapH, 1)} 覆盖 ${pct(e.cover)}`;
+    case 'text_overflow': return `"${String(e.label || '').slice(0, 18)}" 越界 ${nf(e.pen, 3)} 盒 ${nf(e.boxW, 0)}×${nf(e.boxH, 0)} 文 ${nf(e.textW, 0)}×${nf(e.textH, 0)} 缺边距 L${nf(e.dL, 1)} R${nf(e.dR, 1)} T${nf(e.dT, 1)} B${nf(e.dB, 1)}`;
+    case 'misalignment': return `${e.cn || e.family} 离散 ${nf(e.spread, 2)}px → 目标 ${nf(e.target, 2)} 共 ${(e.descs || []).length} 件`;
+    case 'spacing': return `${e.axis} 轴 CV=${nf(e.cv, 3)} 均值 ${nf(e.mean, 1)} 过紧 ${e.tooTight} 最小 ${nf(e.minGap, 1)}`;
+    case 'edge_crossing': return e.kind === 'edge_through_node' ? `连线穿过节点 ${e.hits} 次` : `边↔边交叉 ${e.count} 次`;
+    case 'style_inconsistency': return `字号档 ${(e.fontSizes || []).join(',')} 多余 ${e.fontExcess} / 填充多余 ${e.fillExcess}`;
+    case 'canvas_margin': return `留白 L${nf(e.margins && e.margins.l, 1)} R${nf(e.margins && e.margins.r, 1)} T${nf(e.margins && e.margins.t, 1)} B${nf(e.margins && e.margins.b, 1)} 利用 ${pct(e.utilization)} 溢出 ${nf(e.overflow, 1)}`;
+    case 'tiny_element': return `面积 ${nf(e.area, 0)} vs 中位 ${nf(e.medArea, 0)}（${nf(e.ratio, 2)}×）`;
+    default: return '';
+  }
+}
+
+/* sha256Hex 已移到 01_util.js：编辑层与视图层共用同一份实现，避免跨脚本重复声明 */
+
+/* ------------------------------ 启动 ------------------------------ */
+window.UI = UI;
+window.__out = { stage: 'start', errs: [] };
+window.addEventListener('error', e => window.__out.errs.push('window: ' + e.message));
+
+(async () => {
+  try {
+    const ok = await UI.init();
+    window.__out.stage = ok ? 'ready' : 'nohost';
+  } catch (e) {
+    window.__out.stage = 'fatal';
+    window.__out.fatal = String(e && e.stack ? e.stack : e).slice(0, 900);
+  }
+})();
+</script>
+</body>
+</html>

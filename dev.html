@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8" /><title>SVG Beautifier · dev harness</title>
+<style>
+  html,body{margin:0;padding:12px;background:#f5f6f8;font:13px/1.5 system-ui,sans-serif;color:#1d2430}
+  #host{width:860px;height:600px;position:relative;background:#fff;border:1px solid #e4e7ec}
+  #log{white-space:pre-wrap;font:11px/1.5 ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+<div id="host"></div>
+<div id="log"></div>
+
+<script src="vendor/svgcanvas.min.js"></script>
+<script src="src/01_util.js"></script>
+<script src="src/02_runtime.js"></script>
+<script src="src/03_ir.js"></script>
+<script src="src/04_analyzer.js"></script>
+<script src="src/06_geometry.js"></script>
+<script src="src/05_laya.js"></script>
+<script src="src/07_patch.js"></script>
+<script src="src/10_samples.js"></script>
+<script>
+window.__out = { stage: 'start', errs: [] };
+window.addEventListener('error', e => window.__out.errs.push('window: ' + e.message));
+
+(async function () {
+  const O = window.__out;
+  const T = (k, v) => { O[k] = v; };
+  try {
+    if (!window.SVGCanvasLib) { T('stage', 'no-vendor'); return; }
+    const mounted = Runtime.mount(document.getElementById('host'), [860, 600]);
+    T('mounted', mounted);
+    T('api', Runtime.probeApi());
+
+    /* 1) 载入与坐标：验证嵌套 transform 的世界坐标重建 */
+    const nested = '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">' +
+      '<g transform="translate(200,120) scale(1.5)"><rect id="r2" x="0" y="0" width="120" height="50" fill="#fff"/></g>' +
+      '<rect id="r1" x="20" y="20" width="100" height="40" fill="#eef"/></svg>';
+    let ld = Runtime.load(nested);
+    T('loadNested', ld.ok);
+    const elR1 = document.getElementById('r1'), elR2 = document.getElementById('r2');
+    T('world', {
+      r1: Runtime.worldBBox(elR1),
+      r2_local_from_svgedit: (() => { try { return Runtime.canvas.getStrokedBBox([elR2]); } catch (e) { return 'err'; } })(),
+      r2_world_ours: Runtime.worldBBox(elR2),
+      r2_expected: { x: 199.25, y: 119.25, w: 181.5, h: 76.5 }
+    });
+
+    /* 2) 干净样例：打分器自洽性锚点 */
+    const table = buildSampleTable();
+    T('tableN', table.length);
+
+    /* 2b) 导出/重载往返保真度：回滚的正确性前提 */
+    const rtProbe = [];
+    for (const s of table.filter(x => x.dialect === 'raw' && x.defects.length).slice(0, 4)) {
+      Runtime.load(s.svg);
+      const i1 = IR.build(Runtime, {}), a1 = Analyzer.run(i1, {});
+      const svg2 = Runtime.exportString();
+      Runtime.load(svg2);
+      const i2 = IR.build(Runtime, {}), a2 = Analyzer.run(i2, {});
+      rtProbe.push({
+        id: s.id, s1: a1.score, s2: a2.score, dScore: r2(a2.score - a1.score),
+        n1: i1.stats.nodes, n2: i2.stats.nodes, e1: i1.stats.edges, e2: i2.stats.edges,
+        m1: a1.metrics, m2: a2.metrics, svgLen: svg2.length,
+        cv1: { w: i1.canvas.w, h: i1.canvas.h, cb: i1.contentBox },
+        cv2: { w: i2.canvas.w, h: i2.canvas.h, cb: i2.contentBox },
+        raw2: a2.raw.canvas,
+        svgHead: svg2.slice(0, 260)
+      });
+    }
+    T('roundTrip', rtProbe);
+
+    const clean = table.filter(s => s.expectClean && !s.real);
+    const cleanReport = [];
+    for (const s of clean) {
+      const r = await Pipeline.beautify(Runtime, s.svg, { strategy: 'rule', maxRounds: 1, sopt: {} });
+      cleanReport.push({ id: s.id, score: r.ok ? r.before.score : null, metrics: r.ok ? r.before.metrics : null, stats: r.ok ? r.before.stats : null, counts: r.ok ? r.before.counts : null, raw: r.ok ? r.before.raw : null, err: r.ok ? null : r.err });
+    }
+    T('clean', cleanReport);
+
+    /* 3) 缺陷样例：检出 + 修复 */
+    const buggy = table.filter(s => s.defects && s.defects.length);
+    const cases = [];
+    for (const s of buggy) {
+      let r;
+      try { r = await Pipeline.beautify(Runtime, s.svg, { strategy: 'rule', maxRounds: 3, sopt: {} }); }
+      catch (e) { cases.push({ id: s.id, crash: String(e && e.stack ? e.stack : e).slice(0, 400) }); continue; }
+      cases.push({
+        id: s.id, injected: s.injected.map(x => x.type),
+        before: { score: r.before.score, metrics: r.before.metrics, counts: r.before.counts, raw: r.before.raw },
+        after: { score: r.after.score, metrics: r.after.metrics, counts: r.after.counts, raw: r.after.raw },
+        delta: r.delta,
+        rounds: r.ledger.map(l => ({ r: l.round, ops: (l.ops || []).length, commit: l.commit, gain: l.gain, reasons: l.reasons,
+          chosen: l.chosen, planDbg: l.planDbg,
+          afterStage1: l.afterStage1, gainStage1: l.gainStage1, gainTail: l.gainTail,
+          accepted: l.accepted, rejected: l.rejected, tailN: l.tailN, rejectedKeys: l.rejectedKeys,
+          steps: (l.steps || []).map(s2 => ({ i: s2.i, n: s2.nOps, issue: s2.issue, strategy: s2.strategy,
+            target: String(s2.target || '').slice(0, 34), key: s2.itemKey, gain: s2.gain, accept: s2.accept,
+            reasons: s2.reasons, tail: (s2.tail || []).map(t => t.grow ? 'grow' + (t.canvas ? ('->' + t.canvas.w + 'x' + t.canvas.h) : '') : 'tail' + t.n).join(',') })),
+          afterRaw: l.afterRaw,
+          tail: l.tail ? { n: l.tail.n, applied: l.tail.applied, grow: !!l.tail.grow, canvas: l.tail.canvas, dx: l.tail.dx, dy: l.tail.dy, errors: l.tail.errors } : null,
+          opDetail: (l.ops || []).map(o => o.strategy + ':' + o.target + (o.skipped ? ' [skip]' : '')) })),
+        skipped: (r.skipped || []).map(s2 => s2.skipped + ' / ' + (s2.strategy || '')),
+        err: r.ok ? null : r.err
+      });
+    }
+    T('cases', cases);
+    T('stage', 'done');
+  } catch (e) {
+    T('stage', 'fatal');
+    O.fatal = String(e && e.stack ? e.stack : e).slice(0, 900);
+  }
+})();
+</script>
+</body>
+</html>
