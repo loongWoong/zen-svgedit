@@ -56,7 +56,11 @@ for it in items:
 lines.append("];")
 lines.append("")
 
-OUT.write_text("\n".join(lines), encoding="utf-8")
+# 必须显式 newline="\n"：Path.write_text / open 的默认 newline=None 会把 \n
+# 翻译成 os.linesep，于是在 Windows 上产出 CRLF —— 那样每重跑一次行尾就漂一次，
+# 报告里写死的体积数字随之失效。仓库的 .gitattributes 也钉了 eol=lf，两者一致。
+with open(OUT, "w", encoding="utf-8", newline="\n") as f:
+    f.write("\n".join(lines))
 print(f"[ok] {OUT}  件数={len(items)}  合计={sum(i['bytes'] for i in items)}B")
 for it in items:
     print(f"   - {it['id']:38s} {it['bytes']:>7d}B  {it['file']}")

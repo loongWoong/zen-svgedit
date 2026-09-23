@@ -1,0 +1,29 @@
+# ============================================================================
+# svgedit · 行尾与二进制属性
+# ----------------------------------------------------------------------------
+# 为什么要显式声明：本仓库的**体积/行数会写进 report.md 与 README.md**，并被
+# `build.py --verify` 用来断言产物可复现。若行尾随平台或 git 的 autocrlf 漂移，
+# 这些数字就失去意义。所以这里把口径钉死为 LF，并显式声明二进制文件。
+#
+# 背景：本机 git 的 core.autocrlf=true（Windows 默认），不声明的话新克隆会被
+# 检出成 CRLF，单文件产物会凭空多出约 7 KB。
+# ============================================================================
+
+# 所有文本文件：入库与检出都用 LF
+* text=auto eol=lf
+
+# 明确标记为二进制的扩展名：禁止任何文本/行尾转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.safetensors binary
+*.npz   binary
+
+# 产物是生成物，diff 无意义，也能让 GitHub 不把它当文本高亮
+svgb_beautifier.html linguist-generated=true

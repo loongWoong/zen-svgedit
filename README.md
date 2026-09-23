@@ -123,14 +123,17 @@ SVGB_TARGET=svgb_beautifier.html node tests/edit_e2e.cjs
 ```
 svgedit/
 ├── ui.html                  # 产品页（源码形态：直连 vendor + src，可断点调试）
-├── svgb_beautifier.html     # ★ 单文件产物：7 425 行 / 1 578 081 B（由 build.py 生成）
+├── svgb_beautifier.html     # ★ 单文件产物：7 425 行 / 1 578 008 B（由 build.py 生成）
 ├── dev.html                 # 开发验证台：全量矩阵 / 往返 / 锚点探针
 ├── build.py                 # 构建脚本（仅标准库）
 ├── report.md                # 实现报告：全部数字可复跑
+├── LICENSE                  # MIT（vendor 部分遵循上游 MIT）
+├── .gitignore               # 独立忽略规则（.svgbuild/ 不入库，产物入库）
+├── .gitattributes           # 行尾钉死为 LF + 二进制声明
 ├── svgeditAndLaya-v1.md     # 设计文档 v1
 ├── scgeditAndLaya-v1.1.md   # 设计文档 v1.1
 │
-├── src/                     # 11 个源码模块（共 387 128 B）
+├── src/                     # 11 个源码模块（共 384 990 B）
 │   ├── 01_util.js           #   纯函数：矩阵 / 矩形 / 折线采样 / 可复现随机 / SHA-256
 │   ├── 02_runtime.js        #   SVG 运行时（包 svgcanvas）+ 世界坐标 + 文本测量
 │   ├── 03_ir.js             #   Diagram IR：节点 / 边 / 自由文本 / 容器分组 / 方言识别
@@ -274,8 +277,9 @@ python tools/build_vendor.py --force  # 强制重装后重打
 3. **包含结构变更的操作无法定向取消**（增删元素类），只能整段回退 —— UI 会提前告知牵连步数，
    不会静默升级成"整段回退"。
 4. **探针依赖 Windows + Edge**：浏览器路径写死在探针里，跨平台需改这一行。
-5. **构建会把行尾规范化为 LF**：源文件里 CRLF 的（当前只有 `src/06_geometry.js`）内联进产物后变 LF。
-   核对"产物是否忠实"要按**内容**比，不能按字节比。
+5. **行尾口径钉死为 LF**：`.gitattributes` 声明 `* text=auto eol=lf`，因为本仓库的体积数字会写进
+   文档与 `build.py --verify` 的断言，行尾一旦随平台漂移这些数字就失效。`build.py` 报的 12 段现已
+   全部满足「磁盘字节数 == 内联字节数」；若有人引入 CRLF，构建会打出 `⚠ 磁盘 N B ≠ 内联 M B`。
 
 ---
 

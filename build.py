@@ -11,9 +11,11 @@
 1. **体积一律按 UTF-8 字节数报**。源码混有大量 CJK，`len(str)` 是**码点数**，
    与磁盘字节数差 1.2~1.4 倍（`src/09_editor.js`：57 099 码点 / 71 541 B）。
    早期版本把码点数标成 `B`，读起来"像"体积其实是错的 —— 现在两个数都打出来。
-2. **行尾会被规范化成 LF**。`read()` 走 Python 通用换行，所以 CRLF 源
-   （本仓库里 `src/06_geometry.js` 是唯一全 CRLF 的文件）内联进产物后变 LF，
-   产物里 CRLF 恒为 0。想核对"产物是否忠实"要按**内容**比，不能按字节比。
+2. **行尾必须全仓 LF，脚本会对漂移报警**。`read()` 走 Python 通用换行，
+   所以 CRLF 源（历史上 `src/06_geometry.js` 等 5 个文件）内联进产物后会被规范成 LF。
+   仓库已用 `.gitattributes`（`* text=auto eol=lf`）把口径钉死；此后
+   **磁盘字节数应当恒等于内联字节数**，一旦不等就说明有人引入了 CRLF，
+   脚本会当场打出 `⚠ 磁盘 N B ≠ 内联 M B` 而不静默吞掉。
 
 用法:
     python build.py            # 产出 svgb_beautifier.html
@@ -111,8 +113,10 @@ def build():
 
 def report_parts(parts):
     for rel, _j, c, b, _p, d in parts:
-        norm = "" if c == d else "   (磁盘 %d B → 内联后 %d 字，行尾已规范化)" % (d, c)
-        print("      · %-34s %8d 字 %8d B%s" % (rel, c, b, norm))
+        # 判据：磁盘字节数 vs 内联字节数。仓库口径是 LF，两者应恒等；
+        # 不等即代表该文件带了 CRLF（read() 已把它规范化掉了）。
+        note = "" if b == d else "   ⚠ 磁盘 %d B ≠ 内联 %d B（该文件含 CRLF，已规范化）" % (d, b)
+        print("      · %-34s %8d 字 %8d B%s" % (rel, c, b, note))
 
 
 def main():
