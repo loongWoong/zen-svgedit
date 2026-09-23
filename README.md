@@ -26,6 +26,10 @@
 - 每个操作都要过**验证器**（整轮门 + 单操作门），不通过就回滚——**"不得越改越丑"是可执行断言，不是口号**；
 - 全流程数字（分数、涨跌、接受/拒绝次数）都由真实无头浏览器跑批产出，`report.md` 里每个数字都附可重跑命令。
 
+> **本项目参考并复用开源项目 [`SVG-Edit/svgedit`](https://github.com/SVG-Edit/svgedit)。**
+> 它发布的 `@svgedit/svgcanvas` 提供了 SVG 的解析、渲染与编辑内核（选择 / 属性 / 几何 / 历史撤销栈），
+> 本项目在此内核之上实现缺陷诊断、几何修复、验证器闭环与产品内编辑。完整说明见「[参考项目与致谢](#-参考项目与致谢)」。
+
 ---
 
 ## ✨ 特性
@@ -280,6 +284,34 @@ python tools/build_vendor.py --force  # 强制重装后重打
 5. **行尾口径钉死为 LF**：`.gitattributes` 声明 `* text=auto eol=lf`，因为本仓库的体积数字会写进
    文档与 `build.py --verify` 的断言，行尾一旦随平台漂移这些数字就失效。`build.py` 报的 12 段现已
    全部满足「磁盘字节数 == 内联字节数」；若有人引入 CRLF，构建会打出 `⚠ 磁盘 N B ≠ 内联 M B`。
+
+---
+
+## 🙏 参考项目与致谢
+
+本项目**参考并复用**了开源项目：
+
+| 项目 | 地址 | 本项目如何使用 |
+|:---|:---|:---|
+| **SVG-Edit / svgedit** | <https://github.com/SVG-Edit/svgedit> | 其 `@svgedit/svgcanvas`（本项目打包为 `vendor/svgcanvas.min.js`）提供 SVG 的**解析、渲染与编辑内核**：选择与命中、表现属性写入、几何变换、层级与分组、`undoMgr` 撤销栈。本项目的缺陷诊断、几何修复、验证器闭环与产品内编辑都建立在这层内核之上。 |
+
+具体地，本项目直接使用了上游的以下能力（完整清单见 `report.md` 附录 A）：
+
+- **解析 / 视图**：`setSvgString` / `getSvgString` / `getSvgRoot` / `getSvgContent` / `setZoom` / `setResolution`；
+- **编辑**：`selectOnly` / `getSelectedElements` / `clearSelection`、`setColor` / `setStrokeWidth` /
+  `changeSelectedAttribute`、`moveSelectedElements` / `setRotationAngle` / `flipSelectedElements` /
+  `alignSelectedElements`、`groupSelectedElements` / `ungroupSelectedElement` / `cloneSelectedElements` /
+  `moveToTop` / `moveToBottom`、`undoMgr.undo/redo/addCommandToHistory` 等。
+
+打包方式：`vendor/svgcanvas.min.js` 由 `tools/build_vendor.py` 用 esbuild 打成浏览器可直接
+`<script src>` 的 IIFE 全局 `SVGCanvasLib`。它是上游 ESM 产物的**逐字拼接**（含上游自带的 `pathseg`
+运行时 helper），**未对上游源码做任何修改**。
+
+感谢 **SVG-Edit contributors**（Pavol Rusnak、Jens Diemer、Vidar Hokstad、Alexis Deveria、Brett Zamir、
+Fabien Jacq、OptimistikSAS、Narendra Sisodiya）以及所有 svg-edit / svgedit 的贡献者。
+
+> 命名说明：本目录名 `svgedit` 与上游项目同名，是为标明技术来源；本项目是**独立仓库**，
+> 与上游 [SVG-Edit/svgedit](https://github.com/SVG-Edit/svgedit) **无隶属或官方关系**。
 
 ---
 
