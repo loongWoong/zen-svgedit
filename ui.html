@@ -64,10 +64,30 @@
   #stage{position:relative;flex:1 1 auto;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}
   #host{position:absolute;left:0;top:0;width:100%;height:100%;overflow:auto}
   svg.svgb-ovl{position:absolute;left:0;top:0;pointer-events:none;z-index:9;overflow:visible}
-  /* Wireframe 视图只显示黑白骨架：隐藏原始彩色内容（纯视觉，不改 DOM 字节）。
-   * 用 class 而不是给 #svgcontent 写 inline style，避免被 svgcanvas 内部对
-   * #svgcontent 的 transform 等 inline 样式覆盖（inline 优先级高于类选择器）。 */
-  #stage.wf-content-hidden #svgcontent{visibility:hidden}
+  /* Wireframe / 白板模式：渲染**真实内容**为纯黑白（官方 SVG-Edit 同款做法）。
+   *   —— 不是「隐藏内容 + 画 IR 骨架」，而是用 CSS 把真实 #svgcontent 去色：
+   *      形状：去填充、描边统一转黑；文字：填充转黑、去描边；图片：转灰度。
+   *   —— 纯视觉 class，绝不改内容 DOM 字节；叠加层(.svgb-ovl)不是 #svgcontent
+   *      后代，不受影响。wireframe 模式下叠加层本就清空不画（src/08_ui.js）。
+   *   —— 对齐官方 svgedit@7.4.2 的 svgedit.css：#workarea.wireframe #svgcontent *
+   *      规则一致：fill:none / stroke:#000 / 文字 fill:#000 / 背景 #FFF。 */
+  #stage.wireframe #svgcontent * {
+    fill: none !important;
+    stroke: #000 !important;
+    stroke-width: 1px;
+    stroke-opacity: 1;
+    stroke-dasharray: 0;
+    opacity: 1;
+    pointer-events: stroke;
+    filter: none;
+  }
+  #stage.wireframe #svgcontent text {
+    fill: #000 !important;
+    stroke: none !important;
+  }
+  #stage.wireframe #svgcontent image {
+    filter: grayscale(1) !important;
+  }
 
   /* 拖拽入舞台 */
   #drop{position:absolute;inset:0;z-index:20;display:none;align-items:center;justify-content:center;
@@ -681,9 +701,9 @@ const UI = {
   setView(v) {
     this.view = v;
     for (const b of this.$('tabs').querySelectorAll('button[data-v]')) b.classList.toggle('on', b.dataset.v === v);
-    /* Wireframe 视图只显示黑白骨架：隐藏原始彩色内容（diagnostic/proposed 仍需看到
-     * 真实图面，故仅 wireframe 一种视图隐藏；纯视觉 class，退出即恢复）。 */
-    if (this.stage) this.stage.classList.toggle('wf-content-hidden', v === 'wireframe');
+    /* Wireframe / 白板：用 CSS 把真实内容去色为黑白（见 ui.html 的 #stage.wireframe
+     * 规则），不是隐藏内容。纯视觉 class，切到其它视图即移除，内容恢复彩色。 */
+    if (this.stage) this.stage.classList.toggle('wireframe', v === 'wireframe');
     this.draw();
   },
 
@@ -699,12 +719,17 @@ const UI = {
     });
     this.viewInfo = r || {};
     if (r) {
-      let extra = '';
-      if (r.level) extra = ' · L' + r.level;
-      if (r.drawn !== undefined) extra += ' · ' + r.drawn + ' 图元';
-      if (this.view === 'diagnostic') extra += ' · ' + (r.issues === undefined ? '—' : r.issues) + ' issue';
-      this.$('viewInfo').textContent = (this.view === 'original' ? '无叠加' : '叠加' + extra) +
-        ' · zoom ' + nf(this.zoom);
+      if (this.view === 'wireframe') {
+        /* 白板模式：真实内容由 CSS 去色为黑白，叠加层清空不画 */
+        this.$('viewInfo').textContent = '白板（真实内容黑白）· zoom ' + nf(this.zoom);
+      } else {
+        let extra = '';
+        if (r.level) extra = ' · L' + r.level;
+        if (r.drawn !== undefined) extra += ' · ' + r.drawn + ' 图元';
+        if (this.view === 'diagnostic') extra += ' · ' + (r.issues === undefined ? '—' : r.issues) + ' issue';
+        this.$('viewInfo').textContent = (this.view === 'original' ? '无叠加' : '叠加' + extra) +
+          ' · zoom ' + nf(this.zoom);
+      }
     }
   },
 

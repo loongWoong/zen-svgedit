@@ -5,14 +5,16 @@
  *   本层只在 canvas 之上叠一个独立的 <svg class="svgb-ovl">，
  *   内容 DOM 一个字节都不改；切换视图 = 清空叠加层重画。
  *
- * 三级 wireframe + zoom-aware 分层（v1.1 §3）：
- *   zoom < 0.5    只画 Group / Node 框（低倍下细节是噪声）
- *   0.5 ~ 2.0     加连线骨架
- *   > 2.0         再加 glyph：节点序号 + 标签基线
+ * Wireframe / 白板模式（用户两轮反馈后定稿）：
+ *   不做「隐藏内容 + 画 IR 骨架」——那会让骨架盖在真内容上、且仍透出颜色。
+ *   改为：用 CSS（ui.html 的 #stage.wireframe 规则）把**真实内容**去色为纯黑白
+ *   （形状去填充/描边转黑、文字转黑、背景转白、图片灰度），与官方 SVG-Edit 白板
+ *   语义一致；本层 wireframe() 只负责清空叠加层。
  *
  * 四种视图：
  *   original    —— 什么都不画（原始 DOM 即结果）
- *   wireframe   —— 结构骨架（Node / Edge / 层级）
+ *   wireframe   —— 真实内容由 CSS 去色为黑白（见 ui.html 的 #stage.wireframe 规则）；
+ *                 本层只清空叠加层，不画任何骨架（与官方 SVG-Edit 白板语义一致）。
  *   diagnostic  —— 每个 issue 的落点高亮 + 优先级配色
  *   proposed    —— 每个待执行 op 的 before（虚线）/ after（实线）
  * ===========================================================================*/
@@ -27,10 +29,7 @@ const Views = {
     node: '#2f6fed', nodeFill: 'rgba(47,111,237,0.06)',
     edge: '#0d9488', baseline: '#c2740a',
     critical: '#d64545', high: '#c2740a', medium: '#2f6fed', low: '#98a2b3',
-    before: '#98a2b3', after: '#0d9488',
-    /* Wireframe 专用：纯黑白灰，不引入任何彩色（diagnostic/proposed 才用上面的优先级配色） */
-    wf: { node: '#1f1f1f', nodeFill: 'rgba(0,0,0,0.04)',
-          edge: '#333333', baseline: '#555555' }
+    before: '#98a2b3', after: '#0d9488'
   },
 
   /* hostEl = 叠加层的宿主元素（必须是 svgcanvas 挂载点的**兄弟容器**，
@@ -105,70 +104,22 @@ const Views = {
     const { rt, ir, an, ops, zoom, host } = ctx || {};
     if (host) this.host = host;
     if (!mode || mode === 'original' || !rt || !ir) { this.ensure(this.host); this.clear(); return { drawn: 0, level: 0 }; }
-    if (mode === 'wireframe') return this.wireframe(rt, ir, zoom || 1);
+    if (mode === 'wireframe') return this.wireframe();
     if (mode === 'diagnostic') return this.diagnostic(rt, ir, an);
     if (mode === 'proposed') return this.proposed(rt, ir, ops || []);
     this.clear();
     return { drawn: 0 };
   },
 
-  /* ---------------------------- Wireframe ---------------------------- */
-  wireframe(rt, ir, zoom) {
-    const g = this.begin(rt, 'wf'); if (!g) return { drawn: 0 };
-    const level = zoom < 0.5 ? 1 : (zoom <= 2.0 ? 2 : 3);
-    const WF = this.PAL.wf; /* 纯黑白灰，不引入彩色 */
-    let n = 0;
-    /* Edge 骨架（L2+）：先画，压在节点框下面 */
-    if (level >= 2) {
-      for (const e of ir.edges) {
-        const pts = e.pts.map(p => `${r2(p.x)},${r2(p.y)}`).join(' ');
-        this.el(g, 'polyline', {
-          points: pts, fill: 'none', stroke: WF.edge,
-          'stroke-width': 1.2, 'stroke-dasharray': '5 3', opacity: 0.85
-        });
-        /* 字段名以 03_ir.js#makeEdge 为准：markerEnd / markerStart（不是 arrow）。
-         * 有 marker-end 或 marker-start 都算「有向边」，箭头一律画在末端。 */
-        if (e.markerEnd || e.markerStart) {
-          const a = e.pts[e.pts.length - 1], b = e.pts[Math.max(0, e.pts.length - 2)];
-          const ang = Math.atan2(a.y - b.y, a.x - b.x);
-          const s = 7;
-          const p1 = { x: a.x - s * Math.cos(ang - 0.4), y: a.y - s * Math.sin(ang - 0.4) };
-          const p2 = { x: a.x - s * Math.cos(ang + 0.4), y: a.y - s * Math.sin(ang + 0.4) };
-          this.el(g, 'polygon', {
-            points: `${r2(a.x)},${r2(a.y)} ${r2(p1.x)},${r2(p1.y)} ${r2(p2.x)},${r2(p2.y)}`,
-            fill: WF.edge, stroke: 'none'
-          });
-        }
-        n++;
-      }
-    }
-    /* Node 框（全层级） */
-    for (const nd of ir.nodes) {
-      this.rect(g, nd.geomBox, { fill: WF.nodeFill, stroke: WF.node, 'stroke-width': 1 });
-      if (nd.labels.length) {
-        const l = nd.labels[0];
-        this.el(g, 'line', {
-          x1: r2(R.cx(nd.geomBox)), y1: r2(R.cy(nd.geomBox)),
-          x2: r2(R.cx(l.bbox)), y2: r2(R.cy(l.bbox)),
-          stroke: WF.baseline, 'stroke-width': 0.8, 'stroke-dasharray': '2 2'
-        });
-      }
-      if (level >= 3) {
-        /* mkId('n') → 'n3'，序号要去掉小写前缀（不是 'N'） */
-        this.text(g, nd.geomBox.x, nd.geomBox.y - 4, '#' + String(nd.id).replace(/^[a-z]/, ''),
-          { fill: WF.node, 'font-size': 9, 'font-family': 'ui-monospace,monospace' });
-        for (const l of nd.labels) {
-          this.el(g, 'line', {
-            x1: r2(l.bbox.x), y1: r2(R.cy(l.bbox)), x2: r2(R.right(l.bbox)), y2: r2(R.cy(l.bbox)),
-            stroke: WF.baseline, 'stroke-width': 0.8
-          });
-        }
-      }
-      n++;
-    }
-    /* 自由文本（L3 才显示，否则只是噪声） */
-    if (level >= 3) for (const t of ir.texts) this.rect(g, t.bbox, { fill: 'none', stroke: WF.baseline, 'stroke-width': 0.8, 'stroke-dasharray': '3 2' });
-    return { drawn: n, level, zoom: r2(zoom) };
+  /* ---------------------------- Wireframe ----------------------------
+   * 白板模式：渲染**真实内容**为纯黑白（官方 SVG-Edit 同款做法）。
+   *   视觉完全交给 CSS（ui.html 的 #stage.wireframe 规则：去填充、描边转黑、
+   *   文字转黑、背景转白、图片灰度）。本方法**只清空叠加层、不画任何骨架**——
+   *   否则又会像早期版本那样「叠一层黑白骨架盖在真内容上」，与官方白板语义相悖。 */
+  wireframe() {
+    this.ensure(this.host);
+    this.clear();
+    return { drawn: 0, level: 0 };
   },
 
   /* ---------------------------- Diagnostic ---------------------------- */

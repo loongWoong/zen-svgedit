@@ -117,8 +117,8 @@ const ok = (name, pass, detail) => chk.push({ name, pass: !!pass, detail });
       const s = UI.snapshot(); return { view: vv, drawn: s.drawn, ovl: s.ovl, ovlChildren: s.ovlChildren }; }, v);
     out.b1Views.push(r);
   }
-  ok('B1 四视图均可渲染（wireframe/diagnostic 有图元）',
-     out.b1Views[1].drawn > 0 && out.b1Views[2].drawn > 0);
+  ok('B1 四视图均可渲染（wireframe 叠加层清空 drawn=0 / diagnostic 有图元）',
+     out.b1Views[1].drawn === 0 && out.b1Views[1].ovl === true && out.b1Views[2].drawn > 0);
 
   /* ---------- B3：多选 3 件 ---------- */
   await page.setInputFiles('#fileInput', ABS);

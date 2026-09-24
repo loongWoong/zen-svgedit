@@ -1,10 +1,14 @@
-/* 回归探针：Wireframe 视图应「只显示黑白」——隐藏原始彩色内容 + 骨架纯黑白灰。
-
- * 复现/判定：
- *   (a) 切到 wireframe：#svgcontent 必须 visibility:hidden（原始彩色内容不可见）；
- *       叠加层 wf 组里所有 stroke/fill 不得出现彩色 PAL 值
- *       （蓝 #2f6fed / 青 #0d9488 / 橙 #c2740a），只能是黑(#1f1f1f)/灰(#333/#555)/透明黑。
- *   (b) 切回 original / diagnostic / proposed：#svgcontent 恢复可见。
+/* 回归探针：Wireframe / 白板模式应把**真实内容**渲染为纯黑白（官方 SVG-Edit 语义）。
+ *
+ * 复现/判定（直接对齐用户原话「文字全黑、背景全白、只有黑白色」）：
+ *   (a) 切到 wireframe：#stage 必须有 `wireframe` 类；
+ *       #svgcontent **不得**被隐藏（visibility 不是 hidden）—— 内容是可见的去色版本。
+ *   (b) 真实内容去色：#svgcontent 下所有图形元素（rect/circle/…/path/image）的计算
+ *       样式 fill 必须为 'none'、stroke 必须为 'rgb(0, 0, 0)'；
+ *       所有 text 元素 fill 必须为 'rgb(0, 0, 0)'、stroke 必须为 'none'。
+ *       据此，wireframe 下不存在任何彩色 fill。
+ *   (c) 切回 original：#stage 移除 `wireframe` 类，之前有彩色 fill 的元素恢复成原色
+ *       （fill 不再是 'none'），证明只是视觉去色、内容 DOM 一个字节没改。
  *
  * 用法：NODE_PATH=... node tests/regress_wireframe.cjs
  *       SVGB_TARGET=svgb_beautifier.html node tests/regress_wireframe.cjs
@@ -16,8 +20,7 @@ const TARGET = process.env.SVGB_TARGET || 'svgb_beautifier.html';
 const url = 'file:///' + path.resolve(ROOT, TARGET).replace(/\\/g, '/');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// 彩色 PAL（diagnostic/proposed 才用，wireframe 绝不允许出现）—— 在浏览器内联使用
-const COLOR_PAL = ['#2f6fed', '#0d9488', '#c2740a', '#d64545', '#98a2b3'];
+const GEOM = ['rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'path', 'text', 'image'];
 
 (async () => {
   const browser = await chromium.launch({
@@ -36,50 +39,82 @@ const COLOR_PAL = ['#2f6fed', '#0d9488', '#c2740a', '#d64545', '#98a2b3'];
   const result = await page.evaluate(async () => {
     const out = {};
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const contentVis = () => {
-      const c = Runtime.root() && Runtime.root().querySelector('#svgcontent');
-      return c ? getComputedStyle(c).visibility : 'no-content';
+    const GEOM = ['rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'path', 'text', 'image'];
+    const contentEls = () => {
+      const root = Runtime.root && Runtime.root();
+      const c = root && root.querySelector('#svgcontent');
+      if (!c) return [];
+      return Array.from(c.querySelectorAll(GEOM.join(',')));
     };
-    // 载入一个真实样例（带内容）以有可隐藏的彩色内容
+    const snap = () => contentEls().map(e => {
+      const cs = getComputedStyle(e);
+      return { tag: e.tagName.toLowerCase(), fill: cs.fill, stroke: cs.stroke };
+    });
+    const isColorFill = f => /^rgb/.test(f) && f !== 'rgb(0, 0, 0)' && f !== 'rgb(255, 255, 255)';
+
+    // 载入一个真实样例（带彩色内容）以有可去色的素材；没有则取第一个
     const ri = UI.samples.findIndex(s => s.real === true);
-    if (ri >= 0) UI.select(ri);
+    UI.select(ri >= 0 ? ri : 0);
     await sleep(400);
 
-    // (a) wireframe
+    // 记录 original 下的元素颜色，挑一个有彩色 fill 的元素做「恢复」对照
+    const before = snap();
+    const coloredIdx = before.findIndex(s => isColorFill(s.fill));
+    out.original_hasColorFill = coloredIdx >= 0;
+    out.original_colorFillSample = coloredIdx >= 0 ? before[coloredIdx] : null;
+
+    // (a)(b) wireframe
     UI.setView('wireframe');
     await sleep(200);
-    out.wf_contentVis = contentVis();
-    const ovl = document.querySelector('#stage svg.svgb-ovl');
-    const wf = ovl && ovl.querySelector('g.wf');
-    out.wf_hasOverlay = !!wf;
-    const colors = new Set();
-    if (wf) wf.querySelectorAll('*').forEach(e => {
-      ['stroke', 'fill'].forEach(a => { const v = e.getAttribute(a); if (v) colors.add(v.toLowerCase()); });
-    });
-    out.wf_strokeFillValues = Array.from(colors);
-    const COLOR_PAL = ['#2f6fed', '#0d9488', '#c2740a', '#d64545', '#98a2b3'];
-    out.wf_hasColor = out.wf_strokeFillValues.some(v => COLOR_PAL.includes(v));
+    const stage = document.getElementById('stage');
+    out.wf_hasClass = stage.classList.contains('wireframe');
+    const c = Runtime.root().querySelector('#svgcontent');
+    out.wf_contentHidden = c ? getComputedStyle(c).visibility === 'hidden' : 'no-content';
 
-    // (b) 切回 original
+    const wf = snap();
+    // 非文字图形元素：fill 必须为 none，stroke 必须为黑
+    const nonText = wf.filter(s => s.tag !== 'text');
+    out.wf_nonTextCount = nonText.length;
+    out.wf_nonTextBadFill = nonText.filter(s => s.fill !== 'none').length;
+    out.wf_nonTextBadStroke = nonText.filter(s => s.stroke !== 'rgb(0, 0, 0)').length;
+    // 文字元素：fill 必须为黑，stroke 必须为 none
+    const texts = wf.filter(s => s.tag === 'text');
+    out.wf_textCount = texts.length;
+    out.wf_textBadFill = texts.filter(s => s.fill !== 'rgb(0, 0, 0)').length;
+    out.wf_textBadStroke = texts.filter(s => s.stroke !== 'none').length;
+    // 任何元素都不允许出现彩色 fill
+    out.wf_hasColorFill = wf.some(s => isColorFill(s.fill));
+
+    // (c) 切回 original：类移除 + 彩色元素恢复
     UI.setView('original');
     await sleep(150);
-    out.original_contentVis = contentVis();
+    out.original_hasClass = stage.classList.contains('wireframe');
+    const after = snap();
+    out.original_restored = (coloredIdx >= 0 && after[coloredIdx] && isColorFill(after[coloredIdx].fill));
 
-    // (c) diagnostic 也须可见内容
+    // diagnostic 同样不应隐藏内容
     UI.setView('diagnostic');
     await sleep(150);
-    out.diagnostic_contentVis = contentVis();
+    const c2 = Runtime.root().querySelector('#svgcontent');
+    out.diagnostic_contentHidden = c2 ? getComputedStyle(c2).visibility === 'hidden' : 'no-content';
     UI.setView('original');
     return out;
   });
 
   // 判定
   const checks = [
-    ['wireframe 下原始内容隐藏', result.wf_contentVis === 'hidden'],
-    ['wireframe 叠加层存在', result.wf_hasOverlay === true],
-    ['wireframe 骨架无彩色', result.wf_hasColor === false],
-    ['切回 original 内容恢复', result.original_contentVis !== 'hidden'],
-    ['diagnostic 内容仍可见', result.diagnostic_contentVis !== 'hidden'],
+    ['wireframe 类已加', result.wf_hasClass === true],
+    ['wireframe 下真实内容未隐藏', result.wf_contentHidden !== 'hidden'],
+    ['wireframe 存在图形元素', result.wf_nonTextCount > 0],
+    ['wireframe 图形 fill 全为 none', result.wf_nonTextBadFill === 0],
+    ['wireframe 图形 stroke 全为黑', result.wf_nonTextBadStroke === 0],
+    ['wireframe 存在文字元素', result.wf_textCount > 0],
+    ['wireframe 文字 fill 全为黑', result.wf_textBadFill === 0],
+    ['wireframe 文字 stroke 全为 none', result.wf_textBadStroke === 0],
+    ['wireframe 无任何彩色 fill', result.wf_hasColorFill === false],
+    ['original 移除了 wireframe 类', result.original_hasClass === false],
+    ['original 彩色元素已恢复', result.original_restored === true],
+    ['diagnostic 内容未隐藏', result.diagnostic_contentHidden !== 'hidden'],
     ['无 pageerror', errs.length === 0]
   ];
   const pass = checks.filter(c => c[1]).length;

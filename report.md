@@ -86,7 +86,7 @@ node tools/run_dev.cjs dev.html
 | `05_laya.js` | Laya 客户端 + 规则引擎 + 问句构造 + 决策合成（rule/mix/model） |
 | `06_geometry.js` | 确定性几何/布局引擎：op 构造器 + 画布收尾 + 策略顺位回退 |
 | `07_patch.js` | Patch 引擎 + 验证器（整轮门 + op 门）+ 回滚闭环 |
-| `08_ui.js` | 非侵入叠加视图：wireframe(三级/zoom-aware) / diagnostic / proposed |
+| `08_ui.js` | 非侵入叠加视图：wireframe（CSS 真实内容去色·叠加层清空）/ diagnostic / proposed |
 | **`09_editor.js`** | **产品内直接编辑：输入守卫 / 能力探测 / 语义操作封装 / 变更轨迹与实时重评分（§15）** |
 | `10_samples.js` | 缺陷注入式样例集（模型层注入 → 真值精确） |
 | `11_realsvgs.js` | 真实产出图内联（由 `.svgbuild/gen_realsvgs.py` 生成） |
@@ -123,22 +123,22 @@ node tools/run_dev.cjs dev.html
 | 视图 | drawn | 层级 | 叠加层 DOM 节点 | 说明 |
 |:---|---:|---:|---:|:---|
 | original | 0 | 0 | 0 | 不画任何东西 |
-| wireframe | 12 | 2 | 24 | 节点框 + 连线骨架 |
+| wireframe | 0 | — | 0 | 真实内容去色为黑白（CSS `#stage.wireframe`），叠加层清空不画（见 §22） |
 | diagnostic | 3 | — | 18 | issue 落点 + 优先级配色 + 序号气泡 |
 | proposed | 0 | — | 0 | 待执行 op 的 before/after |
 
 `original` 视图叠加层节点数为 0 —— 视图层被完全清空，不存在残留装饰。
 
-## 6. zoom-aware 三级 Wireframe（v1.1 §3）
+## 6. Wireframe 的实现形态（已变更为 CSS 去色，见 §22）
 
-| 缩放 | 期望层级 | 实测层级 | 判定 | 绘制图元 |
-|---:|:---:|:---:|:---:|---:|
-| 0.4（实际 0.4） | L1 | L1 | ✅ | 6 |
-| 1（实际 1） | L2 | L2 | ✅ | 12 |
-| 2.5（实际 2.5） | L3 | L3 | ✅ | 12 |
-| fit（实际 1.9） | L2 | L2 | ✅ | 12 |
+> ⚠️ 本节原描述的「zoom-aware 三级 IR 骨架」Wireframe 已被 §22 的方案取代。
+> 现行 Wireframe **不再绘制任何骨架**：切换到该视图时只给 `#stage` 加 `wireframe` 类，
+> 由 CSS 把**真实内容**去色为纯黑白（形状去填充/描边转黑、文字转黑、背景白、图片灰度），
+> 叠加层 `svg.svgb-ovl` 被清空（`drawn=0`）。因此 zoom 分层骨架这一特性已不再存在，
+> 切视图也不改变内容 `exportString()` 的任意一个字节。
 
-低倍（<0.5）只画节点框（6 个），中倍（0.5~2.0）补连线骨架（12 个），高倍（>2.0）再加 glyph。低倍下细节是噪声，所以主动不画。
+（保留本节以说明设计变迁：早期版本曾把 Wireframe 实现为「隐藏内容 + 画 Node/Edge/层级
+黑白骨架」的叠加视图，经两轮用户反馈后改为对齐官方 SVG-Edit 的白板语义。）
 
 ## 7. 提案视图与「仅预览」
 
@@ -418,7 +418,7 @@ imgPath 生效   : vendor  (应由构建期注入为 'vendor')
 |:---|:---|:---|
 | B1 | 单选一件真实 SVG → 新增 1 条 local 条目并自动选中 | `local-onto_platform_architecture`，样例总数 36 → 37 |
 | B1 | 打开后立即可分析 | 分数 58.8 · 46 issue · 1920×1080 · 39 节点 / 10 边 |
-| B1 | 四视图均可渲染 | wireframe drawn=49 · diagnostic drawn=44 |
+| B1 | 四视图均可渲染 | wireframe 真实内容去色（叠加层 drawn=0）· diagnostic drawn=44 |
 | **B2** | **打开不改内容：条目内 svg 与磁盘原文逐字节相同** | `diskSame=True`，17796 B == 磁盘 17796 B |
 | B3 | 一次多选 3 件 → 3 条 local 条目，最后一件被选中 | nLocal=3，ids=`local-onto_platform_architecture, local-laya-marker-scorer, local-02_知识如何长出来`，下拉 39 项 = 样例总数 |
 | B3 | 三条条目字节数与磁盘逐一相符 | `[17796, 6068, 6312]` |
@@ -504,7 +504,7 @@ imgPath 生效   : vendor  (应由构建期注入为 'vendor')
 | B5 | 11 类操作全部进轨迹 | `["填充 #ff5500","位移 2,0 单位","字号 23","文本内容","对齐方式 start","旋转 30°","翻转 水平","置顶","复制副本","删除","成组","解组","对齐 l"]` |
 | C1/C2 | 撤销 / 重做 | 撤销改变内容且重做栈 +1；重做后 `sha` 逐位回到撤销前 |
 | **C3** | **一路撤回到进入编辑时的内容** | 13 步撤销 → `sha` 与进编辑时**逐位相同**，分数 **92.70 = 92.70**；逐行 diff `len 3980 → 3980`，结构签名 `{els:36, nodes:6, texts:12}` 两侧一致 |
-| D | 「切视图不改内容」在编辑模式下仍成立 | 四视图（wireframe drawn=12 / diagnostic drawn=3 / proposed 0 / original 0）切换后 `sha` 与基准相同 |
+| D | 「切视图不改内容」在编辑模式下仍成立 | 四视图（wireframe 真实内容去色·叠加层 drawn=0 / diagnostic drawn=3 / proposed 0 / original 0）切换后 `sha` 与基准相同 |
 | E | 编辑结果进入导出 | 导出串含新色 `#0d9488` |
 | E | 退出编辑：内容保留、选择清空、手柄消失、面板收起 | `sha` 不变 · `sel=0` · `canvasSel=0` · `grips=0` · 两面板均收起 |
 | E | 退出后守卫重新生效 | `pt` 命中 `text#svg_25` 但 `sel=0 / canvasSel=0 / grips=0 / sha` 不变 |
@@ -608,7 +608,7 @@ imgPath 生效   : vendor  (应由构建期注入为 'vendor')
 | Patch + 验证 + 回滚 | ✅ | 零劣化；回滚等价性 `strEq = true`、7 项指标逐项相同 |
 | Laya 决策层 | ✅（架构级） | 单次前向 **19.3 ms / 7 问**；离线回退与 rule 逐位一致；但质量增益为 0（§9.3 已诚实记录） |
 | 四视图非侵入叠加 | ✅ | 四视图 + 反复切换后导出 SHA-256 **一字不变** |
-| zoom-aware 三级 wireframe | ✅ | 0.4→L1 / 1.0→L2 / 2.5→L3 三档全部符合 |
+| Wireframe 白板（CSS 真实内容去色） | ✅（§22 重构） | 切到 wireframe 由 CSS 把真实内容去色为纯黑白（形状填充转无/描边转黑、文字转黑、背景白、图片灰度），叠加层清空不画；切回原图彩色恢复；不改内容 SHA |
 | 真实图回归 | ✅ | 9/9 未劣化（Δ ≥ −0.05），3 例真实提升（最高 Δ+21） |
 | 产品内直接编辑（P0 闭环优先） | ✅ | **43/43**（`ui.html` 与 `svgb_beautifier.html` 各一遍）· 13 步撤销**精确**回到进编辑时的 sha 与分数 · 编辑辅助 DOM 进 IR 元素数 **0** · 零新增依赖 |
 | 编辑自由度（改字号生效 / 切换选择 / 删除 / 清单勾选 / 轨迹撤销） | ✅ | **`edit_ux2` 15/15 + `edit_e2e` 47/47**（`ui.html` 与产物各一遍）· 字号 54/24/30 → 37/37/37 · 撤销栈/内容双验证 |
@@ -1019,31 +1019,48 @@ Uncaught TypeError: Cannot read properties of null (reading 'focus')
 
 ## §22 Wireframe 视图应「只显示黑白」
 
-### 22.1 现象（用户反馈）
-切到 Wireframe 视图后，画面**仍有颜色**：既能看到原始彩色的 SVG 内容透出来，
-叠加的骨架线本身也是蓝/青/橙（node `#2f6fed` / edge `#0d9488` / baseline `#c2740a`）。
-预期：Wireframe 只显示黑白灰的结构骨架。
+### 22.1 现象（用户反馈，两轮）
+第一轮：切到 Wireframe 后画面**仍有颜色**。
+第二轮（定稿，附官方参照）：`参考 https://unpkg.com/svgedit@7.4.2/dist/editor/index.html
+白板模式应该只有黑白色，文字全黑，背景全白`。
+—— 明确否定了「隐藏原始内容 + 画 IR 黑白骨架」的初版方向。
 
-### 22.2 根因
-Wireframe 是**非侵入叠加层**（`src/08_ui.js` 的 `Views`）：它在 svgcanvas 之上叠一个
-独立的 `svg.svgb-ovl`，**原始内容 DOM 一字不改**。因此切到 wireframe 时：
-- 原始彩色内容 `#svgcontent` 从头到尾都是可见的，只是被骨架线盖了一层 → 颜色透出；
-- 骨架线本身还用了彩色 PAL（`Views.PAL`），并非黑白。
+### 22.2 根因（初版方向走偏）
+初版把 Wireframe 当成「**隐藏真实内容 + 在叠加层画 IR 黑白骨架**」：
+- 给 `#stage` 加 `wf-content-hidden` 类把 `#svgcontent` 设 `visibility:hidden`；
+- `wireframe()` 在 `svg.svgb-ovl` 上画 Node/Edge/层级骨架，且 PAL 仍是彩色（蓝/青/橙）。
+这既让骨架盖在真内容上（颜色仍透出），也偏离了官方 SVG-Edit 的白板语义——
+官方**不是**画骨架，而是把**真实内容本身**去色为黑白。
 
-### 22.3 修复
-两处，均在视图层，不改内容 DOM：
-1. **隐藏原始内容**：`ui.html` 的 `setView(v)` 在切到 wireframe 时给 `#stage` 加
-   `wf-content-hidden` 类，配套 CSS `#stage.wf-content-hidden #svgcontent{visibility:hidden}`；
-   切到 original/diagnostic/proposed 时移除该类 → 内容恢复。`visibility` 不改布局，
-   叠加层靠 `getScreenCTM` 对齐依旧准确；用 class 而非给 `#svgcontent` 写 inline style，
-   是为了不被 svgcanvas 内部对 `#svgcontent` 的 transform 等 inline 样式覆盖。
-2. **骨架纯黑白灰**：`Views.PAL` 新增 `wf:{node:'#1f1f1f',nodeFill:'rgba(0,0,0,0.04)',
-   edge:'#333333',baseline:'#555555'}`，`wireframe()` 改用它，去掉全部彩色。
-   （diagnostic/proposed 仍需优先级配色，保持原 PAL 不动。）
+### 22.3 官方实现（svgedit@7.4.2 `svgedit.css`）
+纯 CSS，加在 workarea 容器上，对真实 `#svgcontent` 去色：
+```css
+#workarea.wireframe #svgcontent * { fill:none; stroke:#000; stroke-width:1px;
+  stroke-opacity:1; stroke-dasharray:0; opacity:1; pointer-events:stroke; filter:none; }
+#workarea.wireframe #svgcontent text { fill:#000; stroke:none; }
+#workarea.wireframe #canvasBackground>rect { fill:#FFF !important; }
+```
+切换 = `workarea.classList.toggle('wireframe')`。**内容 DOM 一个字节没改**，叠加层无参与。
 
-### 22.4 验证
-新增 `tests/regress_wireframe.cjs`（无头 Edge）：载入真实样例 → 切 wireframe →
-断言 `#svgcontent` 计算样式 `visibility==='hidden'`、骨架 wf 组的 stroke/fill 不含任何彩色 PAL 值；
-再切回 original / diagnostic 断言内容恢复可见。结果 6/6 通过，无 pageerror。
+### 22.4 修复（对齐官方，本产品）
+三处，均在视图层，不改内容 DOM：
+1. **CSS 去色**：`ui.html` 新增 `#stage.wireframe #svgcontent *{fill:none!important;
+   stroke:#000!important;…}`、`#stage.wireframe #svgcontent text{fill:#000!important;
+   stroke:none!important}`、`…image{filter:grayscale(1)!important}`。
+   用 `!important` 是为了压住任意 SVG 里可能出现的 inline `style="fill:…"`
+   （authored SVG 常见），保证「强制黑白」可靠。`#stage` 已是白底，背景即白。
+2. **`setView(v)`**：切到 wireframe 时 `stage.classList.toggle('wireframe', v==='wireframe')`
+   （取代原 `wf-content-hidden`）；切到其它视图即移除 → 内容恢复彩色。
+3. **`Views.wireframe()`**：改为**只清空叠加层、不画任何骨架**（删去 `PAL.wf` 与三级
+   IR 骨架逻辑）。视觉完全交给 CSS——这才是官方白板语义，而非叠一层黑白骨架。
+
+### 22.5 验证
+改写 `tests/regress_wireframe.cjs`（无头 Edge，13 项断言全过，无 pageerror）：载入真实样例 →
+切 wireframe → 断言 `#stage` 有 `wireframe` 类、`#svgcontent` **未隐藏**、所有图形元素计算样式
+`fill==='none'` 且 `stroke==='rgb(0,0,0)'`、所有 text `fill==='rgb(0,0,0)'` 且 `stroke==='none'`、
+全图无任何彩色 fill；切回 original → 类移除、原彩色元素 fill 恢复为非 none → 证明只是视觉去色。
+
+> 注：原 §5/§6 描述的「zoom-aware 三级 IR 骨架」Wireframe 已被本方案取代（不再绘制骨架，
+> `wireframe` 视图 `drawn=0`）。相关章节已同步订正。
 
 
