@@ -936,3 +936,82 @@ v1.3 把「手改」这一端补到与开源实现同等自由度：**选中卡�
 | 正文分组加「字号一致」判据 | 只按左缘 ±1px 分组 | 同一内容在 fresh/DOM 两条路径上文本测量差 ±1px，标题与正文只差 2px，纯 x 分组会随机并错、块高翻倍后顶出容器 |
 | `reflow_body` 的硬校验用 `Analyzer.minPad` | 用 `st.pad` | 实测卡内容竖向需要 176px、卡高仅 190px，16px 内边距下永远无解；minPad(=6) 才是「不越界」的真实下限 |
 | 正文让开障碍用纵向重叠判定 | 矩形相交 | 图标整块在正文左侧、矩形不相交却纵向压住首行 |
+
+---
+
+## §21 运行时缺陷修复：选中（文字）元素崩溃
+
+### 21.1 现象（用户报告）
+进入编辑模式后，**选中一个文字元素去编辑时**抛出：
+
+```
+Uncaught TypeError: Cannot read properties of null (reading 'focus')
+    at Object.init (svgb_beautifier.html:377)
+    at toEditMode  (svgb_beautifier.html:377)
+    at select     (svgb_beautifier.html:377)
+    at mouseDown  (svgb_beautifier.html:377)
+```
+
+并附带一条浏览器控制台警告（仅 `file://` 直接打开时）：
+`Unsafe attempt to load URL file:///.../vendor/... 'file:' URLs are treated as unique opaque origins.`
+（后者是 svgcanvas 的 `cursor: url('vendor/rotate.svg')` 在 file:// 下的无害告警，不影响功能；见 21.5。）
+
+表象是「选中其它元素报错、无法选中」——第一次能选（非文字元素、或不走该路径），
+第二次选到文字元素就崩，选中链路被异常中断。
+
+### 21.2 根因
+崩溃栈全部落在 svgcanvas 内置的**画布内文本编辑器**上，与 `Editor` 层无关：
+
+- 调用链 `select → toEditMode → init` 来自 svgcanvas 内部的 `selected` 事件处理器
+  （dist/svgcanvas.js，已压缩为 `Wr`）：
+  ```js
+  // 选中 <text> 且当前不在 textedit 模式时，自动进入画布内文本编辑
+  if (i === "text" && G.getCurrentMode() !== "textedit") {
+    let t = F(e.clientX, e.clientY, G.getrootSctm());
+    G.textActions.select(r, t.x, t.y);   // → toEditMode → init → this.#textinput.focus()
+  }
+  ```
+- `init()` 第一行就是 `this.#textinput.focus()`；`#textinput` 是隐藏输入框，
+  只有宿主调过 `textActions.setInputElem(...)` 才会有值。**本宿主从未调用过**，
+  所以 `#textinput` 恒为 `null` → 抛 `reading 'focus'`。
+- **第二条同源路径**（更隐蔽）：字体 API `setFontSize/setFontFamily/setBold/...`
+  在末尾会调 `textActions.setCursor()`，而 `setCursor()` 第一件事也是
+  `this.#textinput.value` / `.focus()`。用户在侧栏面板改选中文字的字号/字体时同样会崩。
+
+也就是说，崩的根子是本产品**根本没用** svgcanvas 的画布内编辑器（文本编辑改走自己的
+侧栏面板 `#eText` → `Editor.setText`），却没把它的自动触发关掉，也没给它喂那个隐藏输入框。
+
+### 21.3 修复
+在 `src/02_runtime.js` 的 `Runtime.mount()` 末尾（canvas 建好之后）新增
+`_neutralizeBuiltinTextEditor()`：
+
+1. **安全网**：建一个隐藏 `<input>` 并 `textActions.setInputElem(inp)`，
+   保证任何 `.focus()/.value` 访问都不因 null 而崩（即便仍有其它路径触发 init/setCursor）。
+2. **主修复**：把 `textActions` 的四条入口 `select / start / init / setCursor` 改造成空实现
+   —— 文字元素像普通元素一样被正常选中（显示抓手、填充属性面板），不再进入 textedit
+   模式（不隐藏抓手、不画闪烁光标），也不再因 `#textinput` 为 null 而崩。
+
+> 只改这四条是因为其余的 `mouseDown/mouseMove/mouseUp/toEditMode/toSelectMode` 只在
+> `textedit` 模式下才被调用；既然 `select/start` 已被拦截、不会再进入该模式，它们不会被触发。
+
+### 21.4 验证（零回归证据）
+新增回归探针 `tests/regress_text_select.cjs`（真实无头 Edge + 真实 svgcanvas@7.4.2），
+做法：进入编辑模式 → 载入带文字的真实 SVG（47 个 `<text>`）→ 真实点击 15 个文字元素中心 +
+直接调用崩溃入口 `Runtime.canvas.textActions.select(textEl,0,0)`，全程捕获 `pageerror`。
+
+- **A/B（修复前 vs 修复后，同一份 `svgb_beautifier.html` 产物）**：
+  | 版本 | 崩溃入口 `textActions.select` 抛错 | `null.focus` 类 pageerror | 文字元素可被正常选中 |
+  |:---|:---:|:---:|:---:|
+  | 修复前 | **是**（`progCrashed: true`） | 0（真实点击多命中覆盖层，靠确定性入口坐实） | — |
+  | 修复后 | 否（`progCrashed: false`） | **0** | **是**（`anyTextSel: true`） |
+- **既有编辑探针全绿（修复后）**：`edit_e2e 47/47`、`edit_multi 18/18`、
+  `edit_ux2 15/15`、`edit_cancel 14/14` —— 无回归。
+- 产物逐字节可复现：`python build.py --verify` → OK。
+
+### 21.5 关于 file:// 警告
+`Unsafe attempt to load URL file:///.../vendor/...` 来自 svgcanvas 给选择手柄设置的
+`cursor: url('vendor/rotate.svg')`。只有当用户**直接双击本地 html 用 file:// 打开**时才出现，
+经 http(s) 部署时不出现；它只是控制台告警，**不抛异常、不影响选中与编辑**。
+如需彻底消除，可在 `svgb_beautifier.html` 经 http(s) 托管（推荐），或后续把该 cursor
+改为内联 data-URI（会动到 svgcanvas 的 imgPath 机制，留作可选优化）。
+

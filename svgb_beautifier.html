@@ -1,6 +1,6 @@
 <!-- 由 svgedit/build.py 生成，请勿手改（改动请落到 ui.html / src/*.js 后重新构建）
      源: ui.html + 12 段脚本（含 vendor/svgcanvas.min.js）
-     构建: 2026-09-23 18:18:03 -->
+     构建: 2026-09-24 08:47:13 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -823,8 +823,62 @@ const Runtime = {
       this.lastError = 'svgcanvas 初始化失败: ' + (e && e.message);
       return false;
     }
+    /* ★ 关闭 svgcanvas 内置「选中/新建文字即进入画布内文本编辑」的行为。
+     * 该行为在选中 <text> 时由 svgcanvas 内部的 selected 事件处理器触发
+     * （dist/svgcanvas.js：if (tagName==='text' && mode!=='textedit') textActions.select(r,…)），
+     * 会立即把模式切成 'textedit'、隐藏选择抓手（showGrips(false)），
+     * 并调用 textActions.init()，而 init() 第一件事就是 this.#textinput.focus()。
+     * 同样的 this.#textinput 还被 setFontSize/setFontFamily 等字体 API 末尾的
+     * setCursor() 读取（this.#textinput.value / .focus()）。
+     * 本宿主**从未调用过** textActions.setInputElem()，#textinput 恒为 null，
+     * 于是抛  Cannot read properties of null (reading 'focus'/'value')，
+     * 异常中断选中/改字体的链路 —— 现象即「选中（文字）元素报错、无法选中」。
+     * 本产品用侧栏面板（#eText）→ Editor.setText 做文本编辑，根本不需要画布内编辑器，
+     * 因此：① 把一个隐藏 input 注入 textActions，确保任何 .focus()/.value 访问都不崩溃；
+     *      ② 把 select/start/init/setCursor 改造成「不进入编辑态、不画光标」的空实现，
+     *         使文字元素像普通元素一样被正常选中（显示抓手、填充属性面板）。 */
+    this._neutralizeBuiltinTextEditor();
     this.ready = true;
     return true;
+  },
+
+  /* 让 svgcanvas 的画布内文本编辑器在定制宿主里「哑火」：不进入编辑态、不画光标、
+   * 也不因 #textinput 为 null 而崩溃。文本编辑改走产品自己的侧栏面板（Editor.setText）。 */
+  _neutralizeBuiltinTextEditor() {
+    const c = this.canvas;
+    if (!c || !c.textActions) return;
+    const ta = c.textActions;
+    /* ① 安全网：提供一个隐藏输入框，避免 textActions 内部对 #textinput 的
+     *    .focus()/.value 访问在 null 上崩溃（即便仍有其它路径触发 init/setCursor）。 */
+    try {
+      if (typeof ta.setInputElem === 'function') {
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.tabIndex = -1;
+        inp.style.position = 'absolute';
+        inp.style.left = '-9999px';
+        inp.style.top = '-9999px';
+        inp.style.opacity = '0';
+        inp.style.pointerEvents = 'none';
+        inp.setAttribute('aria-hidden', 'true');
+        (this.host || document.body).appendChild(inp);
+        ta.setInputElem(inp);
+      }
+    } catch (e) { /* 安全网装不上也不影响主修复（下列方法已拦截） */ }
+    /* ② 主修复：拦截画布内文本编辑的四条入口。
+     *   select   —— 由 selected 事件触发（点选文字元素）；置空 → 文字元素像普通元素一样被选中。
+     *   start    —— 由新建 text 元素触发；本产品不创建 text 元素，置空无害。
+     *   init     —— 进入编辑态时调用；置空 → 不 focus、不算字符盒、不画光标。
+     *   setCursor—— 字体 API 末尾对「空文本」兜底调用；置空 → 不 focus、不生成闪烁光标线。
+     * 这四条之外的 mouseDown/move/up/toEditMode/toSelectMode 只在 textedit 模式下才被调用，
+     * 既然 select/start 已不会进入该模式，它们不会被触发，无需逐个改写。 */
+    const noop = function () {};
+    try {
+      if (ta.select && ta.select !== noop) ta.select = noop;
+      if (ta.start && ta.start !== noop) ta.start = noop;
+      if (ta.init && ta.init !== noop) ta.init = noop;
+      if (ta.setCursor && ta.setCursor !== noop) ta.setCursor = noop;
+    } catch (e) { /* 个别方法不可写则放过，由第①步的安全网兜底 */ }
   },
 
   /* 把任意 SVG 文本规范化成「带确定尺寸」的形式：svgcanvas 需要可解析的 width/height */
