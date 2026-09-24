@@ -135,12 +135,29 @@ const IR = {
       decorations.push(el);
     }
 
-    /* ---------- 5. 文本归属：自由文本若落在某节点框内，归为该节点标签 ---------- */
+    /* ---------- 5. 文本归属：自由文本若落在某节点框内，归为该节点标签 ----------
+     * ★ 健壮性修正（real-02 缺陷）：满版背景板（覆盖 ≥85% 画布）不应吞掉所有文字。
+     *   旧逻辑把每个文字都挂到「第一个包含它的节点」上 —— 满版背景板包含全部文字，
+     *   于是标题被当成背景板的标签、而非独立自由文本 / 所在小容器的标签，
+     *   既让标题在碰撞检测里「消失」（被当作背景板的子节点），也让真正的
+     *   「文字被不透明形状遮挡」无处判定（collision 只比 node-vs-node）。
+     *   修正：① 标出 isBg（满版背景板）；② 每个自由文本只挂到**面积最小**的
+     *   非背景包含节点（smallest-enclosing），背景板与更大的容器不再抢夺标签。 */
+    const cvBox = R.mk(0, 0, canvas.w || 0, canvas.h || 0);
+    const cvArea = cvBox.w > 0 && cvBox.h > 0 ? R.area(cvBox) : 0;
     for (const n of nodes) {
-      const inside = freeTexts.filter(ft => R.has(R.expand(n.geomBox, o.labelSlack + 4), { x: R.cx(ft.bbox), y: R.cy(ft.bbox) }));
-      for (const ft of inside) {
-        n.labels.push(ft); ft.attachedTo = n.id;
-      }
+      /* 背景板 = 自身面积覆盖 ≥85% 画布的节点（满版底板 / 大容器），不是「被画布包住」。
+       * ★ 注意：用面积比而非 coverRatio(n,cvBox) —— 后者是按 min(面积) 归一，
+       *   任何落在画布内的节点都会得到 ≈1.0，会把小色块也误判成背景。 */
+      n.isBg = cvArea > 0 && (R.area(n.geomBox) / cvArea) >= 0.85;
+    }
+    for (const ft of freeTexts) {
+      const owners = nodes.filter(n =>
+        !n.isBg && R.has(R.expand(n.geomBox, o.labelSlack + 4), { x: R.cx(ft.bbox), y: R.cy(ft.bbox) }));
+      if (!owners.length) continue;
+      owners.sort((a, b) => R.area(a.geomBox) - R.area(b.geomBox)); /* 最小包含者优先 */
+      const n = owners[0];
+      n.labels.push(ft); ft.attachedTo = n.id;
     }
     const texts = freeTexts.filter(ft => !ft.attachedTo);
 

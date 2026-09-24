@@ -45,6 +45,7 @@ const Analyzer = {
 
     const raw = {};
     raw.collision = this.collision(ir, o);
+    raw.occlusion = this.occlusion(ir, o);
     raw.textFit = this.textFit(ir, o);
     raw.alignment = this.alignment(ir, o);
     raw.spacing = this.spacing(ir, o);
@@ -53,7 +54,7 @@ const Analyzer = {
     raw.canvas = this.canvas(ir, o);
 
     const metrics = {
-      collision: this.sc(raw.collision.density, o.collSat),
+      collision: this.sc(raw.collision.density + raw.occlusion.density, o.collSat),
       textFit: this.sc(raw.textFit.density, o.fitSat),
       alignment: this.sc(raw.alignment.density, o.alignSat),
       /* spacing 直接用变异系数比较，不走 density 归一 */
@@ -93,6 +94,60 @@ const Analyzer = {
     }
     const density = pairs.reduce((s, p) => s + clamp(p.cover, 0, 1), 0) / Math.max(1, ns.length);
     return { density: r2(density), pairs, count: pairs.length, worst: pairs.length ? Math.max(...pairs.map(p => p.cover)) : 0 };
+  },
+
+  /* ========================== 1b. 文字遮挡（text behind opaque shape） ==========================
+   * ★ real-02 缺陷：标题文字被后绘制的海军蓝胶囊遮住（"训练场" 看不见）。
+   *   旧 collision 只比 node-vs-node，文字（自由文本 / 节点的标签）从不在比较里，
+   *   所以「文字被不透明形状压在底下」永远检不出。
+   *   判定：对每个文字（自由文本 + 所有节点标签），若存在**非背景、不透明填充**的节点
+   *   ① 与文字 bbox 有实质交叠（覆盖 ≥30% 或文字中心落入该形状），
+   *   ② 且该形状在文档顺序上**晚于**文字绘制（compareDocumentPosition FOLLOWING，
+   *      即它会盖在文字之上），则记为 occlusion（critical / high）。
+   *   修复策略：nudge_text（把文字平移出形状，优先，视觉最干净）或
+   *   raise_text（把文字提到该形状之上重绘，兜底，保证可见）。 */
+  occlusion(ir, o) {
+    const FOLLOWING = (typeof Node !== 'undefined' && Node.DOCUMENT_POSITION_FOLLOWING) || 4;
+    const texts = [];
+    for (const t of (ir.texts || [])) texts.push({ t, owner: null });
+    for (const n of ir.nodes) for (const l of (n.labels || [])) texts.push({ t: l, owner: n });
+    const items = [];
+    for (const e of texts) {
+      const t = e.t, owner = e.owner;
+      if (!t || !t.bbox || !t.elem) continue;
+      const tb = t.bbox, tArea = R.area(tb);
+      if (tArea <= 0) continue;
+      for (const m of ir.nodes) {
+        if (m === owner || m.isBg) continue;
+        const c = normColor(m.fill);
+        if (!c) continue;                                       /* 无填充/透明/命名色 → 不遮挡 */
+        const inter = R.intersect(R.expand(tb, 2), m.geomBox);
+        if (!inter) continue;
+        /* ★ 关键修正（real-02 实测）：长标题只有“尾巴”压在不透明形状下时，
+         *   整段文字被形状覆盖的比例极低（本例 ≈7%），若按 ≥30% 覆盖才判定，
+         *   这种“文字被切掉一截”的遮挡永远检不出。改为：**只要文字 bbox 与
+         *   不透明形状有实质交叠（两维都 ≥6px，排除发丝级接触）且形状晚于文字绘制，
+         *   即记为遮挡**——被压住的那截字形本就不可见，是真实缺陷。 */
+        const meaningful = inter.w >= 6 && inter.h >= 6;
+        if (!meaningful) continue;
+        let after = false;                                       /* 形状是否晚于文字绘制（盖在上方） */
+        try { after = (t.elem.compareDocumentPosition(m.shapeElem || m.elem) & FOLLOWING) !== 0; } catch (x) {}
+        if (!after) continue;
+        const cover = R.area(inter) / tArea;
+        const centerIn = R.has(m.geomBox, { x: R.cx(tb), y: R.cy(tb) });
+        items.push({
+          textId: t.id, shapeId: m.id,
+          textDesc: (t.text ? ('“' + t.text.slice(0, 16) + '”') : t.id),
+          shapeDesc: m.describe, cover: r2(cover), centerIn, area: r2(R.area(inter)),
+          rect: { x: r2(inter.x), y: r2(inter.y), w: r2(inter.w), h: r2(inter.h) },
+          textRef: t, shapeRef: m, ownerRef: owner
+        });
+      }
+    }
+    /* 密度按「条数」计（每条遮挡至少 0.25，封顶 1），让存在遮挡时分数有可见落差，
+     * 修复后才能越过 op 级门（Δ0 会被拒）。旧实现除以全部文字数 ≈43 → 单条仅 0.003，修复零收益。 */
+    const density = r2(clamp(items.reduce((s, it) => s + Math.max(it.cover, 0.25), 0), 0, 1));
+    return { items, count: items.length, density, worst: items.length ? Math.max(...items.map(it => it.cover)) : 0 };
   },
 
   /* ========================== 2. 文本适配 ========================== */
@@ -314,6 +369,12 @@ const Analyzer = {
         { cover: p.cover, overlapW: p.overlapW, overlapH: p.overlapH, depth: p.depth, where: p.rect },
         ['move_apart', 'grow_spacing', 'global_relayout']);
     }
+    for (const it of raw.occlusion.items) {
+      add('occlusion', [it.textId, it.shapeId], (it.centerIn || it.area >= 400) ? 'critical' : 'high',
+        { cover: it.cover, where: it.rect, shapeDesc: it.shapeDesc, textDesc: it.textDesc, centerIn: it.centerIn, area: it.area,
+          textRef: it.textRef, shapeRef: it.shapeRef, ownerRef: it.ownerRef },
+        ['nudge_text', 'raise_text']);
+    }
     for (const i of raw.textFit.items) {
       add('text_overflow', [i.node], i.pen >= 0.25 ? 'critical' : 'high',
         { pen: i.pen, textW: i.textW, boxW: i.boxW, boxH: i.boxH, textH: i.textH, pad: i.pad,
@@ -379,6 +440,7 @@ const Analyzer = {
     const cLine = Object.keys(c).sort().map(k => `${k} x${c[k]}`).join(', ');
     L.push(`issues: ${cLine || 'none'}`);
     if (an.raw.collision.count) L.push(`worst overlap: ${pct(an.raw.collision.worst)} of smaller node`);
+    if (an.raw.occlusion.count) L.push(`worst occlusion: ${pct(an.raw.occlusion.worst)} of text hidden by opaque shape`);
     if (an.raw.textFit.count) L.push(`worst text overflow: ${nf(an.raw.textFit.worst * 100, 1)}% of box`);
     if (an.raw.alignment.count) L.push(`worst misalignment: ${nf(Math.max(...an.raw.alignment.clusters.map(x => x.spread)), 1)}px`);
     if (an.raw.spacing.count) L.push(`worst spacing cv: ${nf(an.raw.spacing.cv, 2)}`);

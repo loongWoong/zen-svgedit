@@ -89,6 +89,36 @@ const Pipeline = {
     return { dec, pl };
   },
 
+  /* ★ 确定性遮挡消解预通行（正确性缺陷，强制先行）
+   * 文字被不透明形状遮挡 = 信息不可读，属正确性缺陷，不应依赖策略优化器的
+   * critical 门（该门会过滤掉严重遮挡，见 06 plan() 的 i.priority!=='critical'
+   * 过滤），否则高严重度的遮挡反而被漏修。这里在优化轮之前，用 z-order 提升
+   * 把被盖文字直接提到遮挡形状之上渲染（视觉位置由 CTM 补偿保持不变），保证可见。
+   * 循环收敛：每轮消解后重建 IR 复检，直到无遮挡或连续两轮无进展（guard）。 */
+  _resolveOcclusions(rt, sopt) {
+    const applied = [];
+    let guard = 0;
+    for (;;) {
+      if (guard++ > 24) break;
+      const ir = IR.build(rt, sopt);
+      if (!ir.ok) break;
+      const an = Analyzer.run(ir, sopt);
+      const items = (an.raw.occlusion && an.raw.occlusion.items) || [];
+      if (!items.length) break;
+      let did = false;
+      for (const oc of items) {
+        if (!oc.textRef || !oc.shapeRef) continue;
+        const op = Geo.opRaiseText(ir, an, oc, 'raise_text', null);
+        if (op && typeof op.apply === 'function') {
+          try { op.apply(); applied.push(op.label || oc.textDesc); did = true; }
+          catch (e) { /* 单个失败不影响其余 */ }
+        }
+      }
+      if (!did) break;
+    }
+    return applied;
+  },
+
   /* 完整自修复闭环 */
   async beautify(rt, svgText, opts) {
     const o = Object.assign({ strategy: 'rule', temp: 3, maxRounds: 4, sopt: {}, dryRun: false }, opts || {});
@@ -119,6 +149,14 @@ const Pipeline = {
       lastPlan = pv.pl; lastDec = pv.dec;
       for (const op of pv.pl.ops) proposed.push({ target: op.label, strategy: op.strategy, issue: op.issueType, why: op.why, preview: op.preview });
       return { ok: true, dryRun: true, before, after: before, ledger, finalSvg: beforeSvg, ops: pv.pl, dec: pv.dec, skipped: pv.pl.skipped, ms: r2(nowMs() - t0) };
+    }
+
+    /* 确定性遮挡消解预通行：文字被不透明形状遮挡是正确性缺陷，必须在优化轮之前强制消解，
+     * 否则严重遮挡会被策略优化器的 critical 门漏掉（见 06 plan() 过滤）。 */
+    const occFixed = this._resolveOcclusions(rt, o.sopt);
+    if (occFixed.length) {
+      ir = IR.build(rt, o.sopt);
+      an = Analyzer.run(ir, o.sopt);
     }
 
     for (let round = 1; round <= o.maxRounds; round++) {
@@ -305,6 +343,7 @@ const Pipeline = {
       delta: r2(an.score - before.score),
       tailRounds: ledger.filter(l => l.tail && l.tail.n).length,
       tailCanvasGrow: ledger.filter(l => l.tail && l.tail.grow).length,
+      occFixed, occFixedCount: occFixed.length,
       ledger, finalSvg, beforeSvg,
       ops: lastPlan, dec: lastDec, skipped: lastPlan ? lastPlan.skipped : [],
       ms: r2(nowMs() - t0)

@@ -23,7 +23,8 @@ const Geo = {
     orthogonal_reroute: '正交避障重路由', keep_and_shift: '移动被穿越节点',
     normalize_style: '样式归一', keep_style: '保持样式',
     rebalance_canvas: '画布留白平衡', keep_canvas: '保持画布',
-    grow_to_min: '放大到最小可读', ignore: '忽略'
+    grow_to_min: '放大到最小可读', ignore: '忽略',
+    raise_text: '提升图层', nudge_text: '移出遮挡'
   },
 
   /* 风格决策真实驱动几何目标（不是摆设） */
@@ -71,10 +72,10 @@ const Geo = {
 
   /* 修复阶段顺序（由 Laya 的 fix_order 决策选择） */
   PHASES: {
-    text_first: ['text_overflow', 'style_inconsistency', 'overlap', 'spacing', 'misalignment', 'tiny_element', 'canvas_margin', 'edge_crossing'],
-    geometry_first: ['overlap', 'spacing', 'misalignment', 'tiny_element', 'text_overflow', 'style_inconsistency', 'canvas_margin', 'edge_crossing'],
-    edge_first: ['edge_crossing', 'overlap', 'text_overflow', 'spacing', 'misalignment', 'style_inconsistency', 'tiny_element', 'canvas_margin'],
-    global_relayout: ['canvas_margin', 'overlap', 'spacing', 'misalignment', 'text_overflow', 'edge_crossing', 'style_inconsistency', 'tiny_element']
+    text_first: ['text_overflow', 'style_inconsistency', 'overlap', 'occlusion', 'spacing', 'misalignment', 'tiny_element', 'canvas_margin', 'edge_crossing'],
+    geometry_first: ['overlap', 'occlusion', 'spacing', 'misalignment', 'tiny_element', 'text_overflow', 'style_inconsistency', 'canvas_margin', 'edge_crossing'],
+    edge_first: ['edge_crossing', 'overlap', 'occlusion', 'text_overflow', 'spacing', 'misalignment', 'style_inconsistency', 'tiny_element', 'canvas_margin'],
+    global_relayout: ['canvas_margin', 'overlap', 'occlusion', 'spacing', 'misalignment', 'text_overflow', 'edge_crossing', 'style_inconsistency', 'tiny_element']
   },
 
   /* ==================== 节点可动空间（供多策略共用） ==================== */
@@ -145,6 +146,8 @@ const Geo = {
       case 'overlap:move_apart': return this.evMoveApart(ir, an, issues);
       case 'overlap:grow_spacing': return this.evGrowSpacing(ir, an, issues, st);
       case 'overlap:global_relayout': return { score: 30, detail: '整体重排：改动面最大', risky: true };
+      case 'occlusion:nudge_text': return this.evNudgeText(ir, issues, st);
+      case 'occlusion:raise_text': return this.evRaiseText(issues);
       case 'misalignment:snap_edges': return this.evSnap(ir, an, 'edges');
       case 'misalignment:snap_centers': return this.evSnap(ir, an, 'centers');
       case 'spacing:distribute_equal': return this.evDistribute(ir, issues, 'equal', st);
@@ -619,6 +622,130 @@ const Geo = {
     };
   },
 
+  /* ============ 文字遮挡修复：平移出遮挡 / 提升图层 ============
+   * 两种策略都只动「被遮挡的那个文字」，不动任何形状几何，因此不会引入新的
+   * 节点碰撞；评分由几何可行性预检给出，决策层再按分数排序选首选、其余顺位兜底。 */
+  evNudgeText(ir, issues, st) {
+    /* 平移适合「同父级 / 或遮挡形状不在文字之后绘制」的情形（把文字移出形状几何重叠即可）。
+     * 跨父级且遮挡形状在文字之后绘制时，平移改不了层级，_nudgePlan 返回 null，交棒 raise_text。
+     * 仅在「能找到一个不越界、不与其它不透明形状新生成 ≥30% 覆盖的平移方向」时才算可修。 */
+    let fix = 0, worst = 0;
+    for (const it of issues) {
+      const oc = it.evidence; if (!oc || !oc.textRef || !oc.shapeRef) continue;
+      if (this._nudgePlan(ir, oc, st)) { fix++; worst = Math.max(worst, oc.cover); }
+    }
+    return { score: fix ? r2(72 + 20 * Math.min(1, fix / Math.max(1, issues.length))) : 25, risky: false,
+      detail: fix ? `${fix}/${issues.length} 条文字可平移出遮挡（最大覆盖 ${pct(worst)}）` : '无安全平移方向（改走提升图层）' };
+  },
+
+  evRaiseText(issues) {
+    /* 提升图层（z-order）是文字遮挡的**通用兜底**：只要文字与遮挡形状都在画布里，
+     * 把文字重排到形状之后绘制即可保证可见。opRaiseText 已支持跨父级（用 getScreenCTM
+     * 补偿，位置不变），所以不再限制同父级——对所有遮挡项都算可修。 */
+    let fix = 0;
+    for (const it of issues) {
+      const oc = it.evidence; if (!oc || !oc.textRef || !oc.shapeRef) continue;
+      const tEl = oc.textRef.elem, mEl = oc.shapeRef.shapeElem || oc.shapeRef.elem;
+      if (!tEl || !mEl || !tEl.parentNode || !mEl.parentNode) continue;
+      fix++;
+    }
+    return { score: fix ? r2(60 + 30 * Math.min(1, fix / Math.max(1, issues.length))) : 25, risky: false,
+      detail: fix ? `${fix}/${issues.length} 条文字可提升图层至遮挡形状之上（跨父级亦安全）` : '无可提升文字' };
+  },
+
+  /* 为被遮挡文字计算一个「平移出形状」的方向：四选一（左/右/上/下）取代价最小者，
+   * 要求：不出画布、不与其它不透明形状（排除遮挡者与自身归属节点）生成 ≥30% 覆盖。 */
+  _nudgePlan(ir, oc, st) {
+    const t = oc.textRef, m = oc.shapeRef, tb = t.bbox, mb = m.geomBox;
+    if (!tb || !mb) return null;
+    /* ★ 跨父级且遮挡形状在文字「之后」绘制：平移只改文字自身坐标，无法改变它所在组
+     *   的绘制层级（整组都画在遮挡形状所在组之前），所以平移永远解不掉这类遮挡，
+     *   直接返回 null 让决策层交棒 raise_text（跨父级提升，已做 CTM 补偿）。 */
+    const tEl = t.elem, mEl = m.shapeElem || m.elem;
+    if (tEl && mEl && tEl.parentNode && mEl.parentNode && tEl.parentNode !== mEl.parentNode) {
+      const FOLLOWING = (typeof Node !== 'undefined' && Node.DOCUMENT_POSITION_FOLLOWING) || 4;
+      try { if ((tEl.compareDocumentPosition(mEl) & FOLLOWING) !== 0) return null; } catch (x) {}
+    }
+    const gap = 4, W = ir.canvas.w, H = ir.canvas.h;
+    const cands = [
+      { dx: (mb.x - gap) - R.right(tb), dy: 0 },   /* 左移：右缘 ≤ 形状左缘 */
+      { dx: (R.right(mb) + gap) - tb.x, dy: 0 },   /* 右移 */
+      { dx: 0, dy: (mb.y - gap) - R.bottom(tb) },  /* 上移：底缘 ≤ 形状顶缘 */
+      { dx: 0, dy: (R.bottom(mb) + gap) - tb.y }   /* 下移 */
+    ];
+    let best = null, bestCost = Infinity;
+    for (const c of cands) {
+      if (Math.abs(c.dx) < 0.6 && Math.abs(c.dy) < 0.6) continue;
+      const na = R.mk(tb.x + c.dx, tb.y + c.dy, tb.w, tb.h);
+      if (na.x < -0.5 || na.y < -0.5 || R.right(na) > W + 0.5 || R.bottom(na) > H + 0.5) continue; /* 出画布 */
+      let blocked = false;
+      for (const o of ir.nodes) {
+        if (o === m || o === oc.ownerRef || o.isBg) continue;
+        if (!normColor(o.fill)) continue;
+        /* 文字**当前**已与该节点大量共面（如标题本来就坐在面板里）→ 移动后仍可共存，不算新遮挡 */
+        const cur = R.intersect(tb, o.geomBox);
+        if (cur && R.area(cur) / R.area(tb) >= 0.3) continue;
+        const it = R.intersect(na, o.geomBox);
+        if (it && R.area(it) / R.area(na) >= 0.3) { blocked = true; break; }
+      }
+      if (blocked) continue;
+      const cost = Math.abs(c.dx) + Math.abs(c.dy);
+      if (cost < bestCost) { bestCost = cost; best = c; }
+    }
+    return best;
+  },
+
+  opNudgeText(ir, an, oc, st, key, it) {
+    const plan = this._nudgePlan(ir, oc, st);
+    if (!plan) return null;
+    const t = oc.textRef, tb = t.bbox;
+    const after = { x: r2(tb.x + plan.dx), y: r2(tb.y + plan.dy), w: tb.w, h: tb.h };
+    const why = `文字${t.text ? '“' + t.text.slice(0, 12) + '”' : t.id} 被 ${oc.shapeRef.describe} 遮挡 → 平移 (${r2(plan.dx)}, ${r2(plan.dy)}) 移出遮挡`;
+    return {
+      kind: 'translate', target: t.elem, strategy: key, issueType: 'occlusion', why,
+      preview: { before: tb, after },
+      apply: () => this.applyTranslate({ elem: t.elem }, plan.dx, plan.dy),
+      label: `移出遮挡 ${t.id}`
+    };
+  },
+
+  opRaiseText(ir, an, oc, key, it) {
+    const t = oc.textRef, m = oc.shapeRef;
+    const tEl = t.elem, mEl = m.shapeElem || m.elem;
+    if (!tEl || !mEl || !tEl.parentNode || !mEl.parentNode) return null;
+    const before = Object.assign({}, t.bbox);
+    const why = `文字${t.text ? '“' + t.text.slice(0, 12) + '”' : t.id} 被 ${m.describe} 遮挡 → 提升图层至其之上渲染（保证可见）`;
+    return {
+      kind: 'raise', target: tEl, strategy: key, issueType: 'occlusion', why,
+      preview: { before, after: before },
+      apply: () => {
+        try {
+          const mParent = mEl.parentNode, oldParent = tEl.parentNode;
+          if (oldParent === mParent) {                       /* 同父级：直接提升，位置天然不变 */
+            mParent.insertBefore(tEl, mEl.nextSibling);
+            return;
+          }
+          /* 跨父级提升：把文字移到遮挡形状所在父级、紧随其后绘制。
+           * 两级父级若存在 transform / 嵌套差异，用 getScreenCTM 给文字补一个补偿 matrix，
+           * 使其视觉位置保持不变——对任意嵌套、任意变换都位置安全（更健壮普适）。 */
+          const M0 = tEl.getScreenCTM && tEl.getScreenCTM();  /* 文字当前：局部 → 屏幕 */
+          const B = mParent.getScreenCTM && mParent.getScreenCTM(); /* 目标父级：局部 → 屏幕 */
+          if (M0 && B && typeof B.inverse === 'function' && typeof B.multiply === 'function') {
+            const N = B.inverse().multiply(M0);              /* 文字局部 → 目标父级局部 */
+            const f = n => r2(n);
+            tEl.setAttribute('transform',
+              `matrix(${f(N.a)} ${f(N.b)} ${f(N.c)} ${f(N.d)} ${f(N.e)} ${f(N.f)})`);
+          }
+          mParent.insertBefore(tEl, mEl.nextSibling);
+        } catch (e) {
+          /* 补偿失败（如未渲染拿不到 CTM）：按原样提升，至少保证文字可见 */
+          try { mEl.parentNode.insertBefore(tEl, mEl.nextSibling); } catch (_) {}
+        }
+      },
+      label: `提升图层 ${t.id}`
+    };
+  },
+
   /* ==================== ops 生成 ==================== */
   plan(ir, an, dec, sopt) {
     const st = this.styleOf(dec.applied.style ? styleKey(dec.applied.style) : (sopt && sopt.style));
@@ -728,6 +855,20 @@ const Geo = {
               () => this.applyTranslate(mover, sp.dx, sp.dy),
               `推开 ${mover.describe}`);
             claim(mover.elem, op, ik(it));
+          }
+          break;
+        }
+        case 'occlusion': {
+          for (const it of g.items) {
+            const oc = an.raw.occlusion.items.find(x => x.textId === it.targets[0] && x.shapeId === it.targets[1]);
+            if (!oc) continue;
+            if (g.key === 'nudge_text') {
+              const op = this.opNudgeText(ir, an, oc, st, g.key, it);
+              if (op) claim(oc.textRef.elem, op, ik(it));
+            } else if (g.key === 'raise_text') {
+              const op = this.opRaiseText(ir, an, oc, st, g.key, it);
+              if (op) claim(oc.textRef.elem, op, ik(it));
+            }
           }
           break;
         }

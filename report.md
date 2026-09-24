@@ -1064,3 +1064,45 @@ Uncaught TypeError: Cannot read properties of null (reading 'focus')
 > `wireframe` 视图 `drawn=0`）。相关章节已同步订正。
 
 
+
+## §23 遮挡文字（元素重叠盖住文字）健壮性修复
+
+### 23.1 现象（用户反馈 + 截图）
+`real-02_知识如何长出来.beautified.svg` 美化后，深蓝胶囊 `svg_66` 盖住了标题尾部「训练场」文字；
+用户要求「优化美化逻辑，更健壮普适」——即任意 SVG 里「文字被不透明形状压在下面」都应被消解。
+
+### 23.2 根因（两层）
+1. **背景整版矩形劫持所有文本**：`03_ir.js` 用 `R.coverRatio(n.geomBox, cvBox)` 判断是否「背景节点」，
+   但该 API 语义是 `面积(相交)/min(面积A,面积B)`，对画布内任意节点都≈1.0，于是把大量小色块/面板/胶囊
+   误判为 `isBg:true`，进而**吞掉所有文本作为标签**（标题被归为某面板的 label）。
+2. **遮挡只比较 node↔node**：`04_analyzer.js` 的 `collision` 只遍历 `ir.nodes` 两两相交，从未把
+   「自由文本/标签文本」纳入；且「整页背景节点」被豁免。结果 `collisionPairs:[]`、`titleNode:null`——
+   一个肉眼可见的遮挡，分析器断言「零重叠」。
+
+### 23.3 修复（三处 + 一道确定性预通行）
+- **`03_ir.js`**：`isBg` 改为「节点面积 ≥ 画布面积 85%」，只有真正铺满画布的整版背景才是 `isBg`，
+  小色块/胶囊不再被误吞；文本归属保留 `labelSlack` 余量。
+- **`04_analyzer.js`**：新增 `occlusion()` —— 遍历**所有文本（自由文本 + 各节点 label）**，对任一「有填充/
+  不透明」的非背景节点 `m`，若文本包围盒与 `m.geomBox` 相交、且 `m` 绘制顺序晚于文本
+  （`compareDocumentPosition(FOLLOWING)`），即判定为「文字被遮挡」；记为 `occlusion` issue，证据携带
+  `textRef`/`shapeRef`（IR 引用，供修复器直接取元素）。优先级：中心被吞或交叠面积 ≥400px² → `critical`，
+  否则 `high`。
+- **`05_laya.js`**：`TYPE2METRIC` 补 `occlusion:'collision`（并入碰撞密度，使修复后分数可见落差）；
+  决策候选 `nudge_text`（平移）/`raise_text`（提升图层，跨父级亦安全）。
+- **`06_geometry.js`**：`opRaiseText` 重写为**跨父级安全**——同父级直接 `insertBefore` 到遮挡形状之后；
+  跨父级时用 `getScreenCTM` 计算补偿 matrix 维持视觉位置不变（任意嵌套/变换都位置安全），再插入。
+  `evRaiseText` 去掉「仅同父级」限制，`_nudgePlan` 对「跨父级后反而被新形状挡住 ≥30%」的平移返回 null
+  （让位于 raise）。
+- **`07_patch.js`（关键）**：新增确定性预通行 `_resolveOcclusions()` —— 文字被不透明形状遮挡属**正确性缺陷**，
+  **不应依赖策略优化器的 critical 门**（该门会 `i.priority!=='critical'` 过滤掉严重遮挡，导致高严重度遮挡
+  反而漏修：实测 `real-onto_platform_architecture` 的 occlusion 是 `critical` 被整组丢弃）。
+  预通行在优化轮之前强制用 `opRaiseText` 把被盖文字提到遮挡形状之上，循环收敛（每轮重建 IR 复检）后，
+  把 `ir/an` 重建交给主循环。返回 `occFixed` 数组计入台账。
+
+### 23.4 验证
+新增 `tests/diag_occlusion.cjs` / `tests/validate_occlusion.cjs`（无头 Edge，遍历全部 6 个真实样例）：
+- `real-02`（同父级）→ 1→0，分数 54.95→72.15；`real-04` → 1→0，46.55→64.45；
+- `real-onto_platform_architecture`（**跨父级**，此前漏修）→ 1→0，46.3→69.25；
+- 其余样例 0→0（无误判），全程无 pageerror；叠加层视图切换非侵入性仍成立。
+- 位置保全：跨父级 raise 前后文字 `getBoundingClientRect` 完全一致（CTM 补偿生效）。
+- `build.py --verify` 逐字节可复现。

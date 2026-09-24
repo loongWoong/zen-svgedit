@@ -77,7 +77,7 @@ const LayaRule = {
 
     /* --- 1. 主导问题 --- */
     const dom = this.dominant(an);
-    const TYPE2METRIC = { overlap: 'collision', text_overflow: 'textFit', misalignment: 'alignment', spacing: 'spacing', edge_crossing: 'edgeRouting', style_inconsistency: 'style', canvas_margin: 'canvas', tiny_element: 'collision' };
+    const TYPE2METRIC = { overlap: 'collision', occlusion: 'collision', text_overflow: 'textFit', misalignment: 'alignment', spacing: 'spacing', edge_crossing: 'edgeRouting', style_inconsistency: 'style', canvas_margin: 'canvas', tiny_element: 'collision' };
     const typeScores = {};
     for (const k of Analyzer.METRIC_KEYS) typeScores[k] = an.metrics[k];
     const domType = Object.keys(TYPE2METRIC).filter(t => byType[t])
