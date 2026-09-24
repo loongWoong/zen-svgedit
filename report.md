@@ -1106,3 +1106,40 @@ Uncaught TypeError: Cannot read properties of null (reading 'focus')
 - 其余样例 0→0（无误判），全程无 pageerror；叠加层视图切换非侵入性仍成立。
 - 位置保全：跨父级 raise 前后文字 `getBoundingClientRect` 完全一致（CTM 补偿生效）。
 - `build.py --verify` 逐字节可复现。
+
+
+## §24 两个新功能：SVG 代码模式（左预览/右编辑） + 配色风格一键切换
+
+### 24.1 需求
+1. **代码模式**：左侧预览、右侧编辑 SVG 源码（实时生效）。
+2. **配色切换**：一键切换几类常用风格系列（企业科技蓝 / 白底商务 / 深色未来科技 /
+   Palantir 本体 / AI 大模型平台 / 金融政企 / AWS 云原生）。
+
+### 24.2 实现
+- **`src/12_palette.js`（新）**：配色引擎。
+  - 7 套 `PRESETS`，每套定义 `bg`（背景）/`text`（可读前景）/`panel`（浅灰表面）/`accents`（形状强调色，按亮度升序）。
+  - 在**活 DOM** 上重着色（`getBBox` 可用）：
+    · **背景**＝覆盖画布 >50% 面积的最大填充元素，强制设为目标 `bg`；
+    · **形状**＝其余实心/描边元素，按**亮度**落到 `bg`/`panel`/`accents`（暗→首、亮→末），
+      保持「暗仍暗、亮仍亮」语义在目标色系家族内（普适于任意源图）；
+    · **文字**＝所有 `<text>/<tspan>` 强制设为目标 `text` 色 → **任意主题下都可读**（不再出现深色主题里
+      navy 标题压在近黑底上不可见）；
+    · **`<style>` 块**＝按「规则」逐块处理：选择器是文本角色（`.title/.h2/.white/…`）→ `text` 色，
+      其余颜色按亮度映射。保证导出 SVG 的样式与内联一致（含美化后的 class 化文字）。
+- **`src/13_codemode.js`（新）**：UI 接线。
+  - 顶部工具栏加「代码」按钮 + 「配色」下拉；`#mid` 切 `.codemode` 类 → 左预览 / 右编辑两栏。
+  - 代码面板：`格式化`（导出当前画布并缩进）/ `应用` / `关闭`；输入 **350ms 防抖**实时
+    `Runtime.load` 到预览（失败保留上一有效状态并报错）。
+  - 配色切换：首次切风格前**快照**原图；选「原图配色」回滚快照 → 可无损还原。
+    舞台底色随风格联动（Wireframe 模式仍强制白底）。
+- **`ui.html`**：新增 `#stageRow`/`#codePane` 结构与样式、`selPalette`/`btnCode` 控件、
+  引入 `12_palette.js`/`13_codemode.js`，并在 `setView/select/run` 后同步代码面板。
+
+### 24.3 验证（`tests/test_codemode_palette.cjs`，无头 Edge）
+- 代码模式开/关正常，文本域含导出 SVG；编辑为红矩形后 `Runtime.exportString()` 含该 rect 与 `#ff0000`（实时生效）。
+- 切 `dark_cyber`：背景 `#050B14`、形状变青/紫、**全部 34 个文字变白**（`darkTextOnDark=0`），
+  `<style>` 的 `.title` 同步为 `#ffffff`；选「原图配色」可还原（`restored=true`）。
+- 7 套配色逐一验证：浅色系文字→深色（`#1a1a1a`/`#111827`/`#0f172a`…），深色系文字→浅色（`#f5f5f5`），
+  背景均正确置位 → **文字始终可读**。
+- 回归：`regress_wireframe` 13/13、`smoke_svgb` 视图非侵入性 `same=true`、全程无 pageerror；
+  `build.py --verify` 逐字节可复现；Wireframe/白板在切配色后仍为纯黑白（CSS `!important` 覆盖内联色）。

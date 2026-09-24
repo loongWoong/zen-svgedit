@@ -1,6 +1,6 @@
 <!-- 由 svgedit/build.py 生成，请勿手改（改动请落到 ui.html / src/*.js 后重新构建）
-     源: ui.html + 12 段脚本（含 vendor/svgcanvas.min.js）
-     构建: 2026-09-24 11:15:40 -->
+     源: ui.html + 14 段脚本（含 vendor/svgcanvas.min.js）
+     构建: 2026-09-24 11:47:34 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -66,6 +66,21 @@
   /* 舞台 */
   #stage{position:relative;flex:1 1 auto;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}
   #host{position:absolute;left:0;top:0;width:100%;height:100%;overflow:auto}
+
+  /* 代码模式：#mid 进入 codemode 时，#stage 与 #codePane 左右并排（左预览 / 右编辑） */
+  #stageRow{flex:1 1 auto;min-height:0;display:flex;gap:10px}
+  #mid.codemode #stage{width:54%;flex:0 0 54%}
+  #mid.codemode #codePane{display:flex}
+  #codePane{display:none;flex:1 1 auto;min-width:0;flex-direction:column;gap:6px}
+  #codePane .codeBar{display:flex;align-items:center;gap:6px}
+  #codePane .codeBar b{font-size:12px;color:var(--tx2)}
+  #codeArea{flex:1 1 auto;width:100%;min-height:0;resize:none;box-sizing:border-box;
+    font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--tx);
+    background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:9px 10px;tab-size:2;white-space:pre;overflow:auto}
+  #codeArea:focus{outline:none;border-color:var(--acc)}
+  .codeStatus{font-size:11px;color:var(--tx3);min-height:15px}
+  .codeStatus.err{color:#e5484d}
+  .codeStatus.ok{color:#16a34a}
   svg.svgb-ovl{position:absolute;left:0;top:0;pointer-events:none;z-index:9;overflow:visible}
   /* Wireframe / 白板模式：渲染**真实内容**为纯黑白（官方 SVG-Edit 同款做法）。
    *   —— 不是「隐藏内容 + 画 IR 骨架」，而是用 CSS 把真实 #svgcontent 去色：
@@ -257,6 +272,12 @@
   <button id="btnFix" class="primary">一键美化</button>
   <button id="btnReset" class="ghost">重置</button>
   <button id="btnExport" class="ghost">导出 SVG</button>
+  <div class="grp"><label>配色</label>
+    <select id="selPalette" title="一键切换风格色系（仅重着色，不改布局）">
+      <option value="__original__">原图配色</option>
+    </select>
+  </div>
+  <button id="btnCode" class="ghost" title="代码模式：左侧预览、右侧编辑 SVG 源码（实时生效）">代码</button>
   <div class="spacer"></div>
   <span id="layaBadge" class="badge off">Laya 未探测</span>
   <span id="statBadge" class="badge">—</span>
@@ -321,9 +342,22 @@
       <button id="eUndo" title="撤销（走 svgcanvas 的 undoMgr）">撤销</button>
       <button id="eRedo" title="重做">重做</button>
     </div>
-    <div id="stage">
-      <div id="host"></div>
-      <div id="drop"><b>松开以打开 SVG</b><span>支持一次拖入多个文件；也可以拖入一段 SVG 文本</span></div>
+    <div id="stageRow">
+      <div id="stage">
+        <div id="host"></div>
+        <div id="drop"><b>松开以打开 SVG</b><span>支持一次拖入多个文件；也可以拖入一段 SVG 文本</span></div>
+      </div>
+      <div id="codePane">
+        <div class="codeBar">
+          <b>SVG 代码</b>
+          <span class="spacer"></span>
+          <button id="codeFormat" class="mini" title="把当前画布导出为带缩进的格式化 SVG">格式化</button>
+          <button id="codeApply" class="mini primary" title="立即应用文本框里的 SVG（绕过防抖）">应用</button>
+          <button id="codeClose" class="mini" title="退出代码模式">关闭</button>
+        </div>
+        <textarea id="codeArea" spellcheck="false" placeholder="在此编辑 SVG 源码；输入会实时（防抖）应用到左侧预览。"></textarea>
+        <div id="codeStatus" class="codeStatus">—</div>
+      </div>
     </div>
   </section>
 
@@ -6627,6 +6661,317 @@ const Editor = {
 };
 
 </script>
+<script>
+/* =============================================================================
+ * SVG Beautifier · 12 配色风格一键切换引擎（Palette）
+ *
+ * 职责：把任意 SVG 的配色「移植」到一套目标风格色系（角色化重着色）。
+ *   —— 用户需求：一键切换几类常用风格系列（企业科技蓝 / 白底商务 / 深色未来科技 /
+ *      Palantir 本体 / AI 大模型平台 / 金融政企 / AWS 云原生）。
+ *
+ * 设计要点（更健壮普适）：
+ *   · 全部在 SVG 的「活 DOM」（svgcanvas #svgcontent）上操作，getBBox 可用，
+ *     因此能可靠识别「铺满画布的背景矩形」与形状的面积级别。
+ *   · 角色识别：背景（覆盖 >50% 画布的最大填充元素）、文字（<text>/<tspan>）、
+ *     形状（其余实心填充元素）。
+ *   · 形状配色：收集所有实心填充/描边的「不同色」，按亮度升序排序 → 依次映射到
+ *     目标色系的 accents 数组（暗者取首、亮者取末，循环复用）。
+ *     这样「暗形状仍暗、亮形状仍亮」语义在目标色系家族内保持，普适于任意源图。
+ *   · 文字配色：仅当文字当前为「中性色」（亮度极高 >0.85 或极低 <0.15，即黑/白/灰）
+ *     才改成目标 text 色；落在彩色按钮/胶囊上的饱和色文字（如蓝底白字）保持不动，
+ *     避免「白字变黑字」导致不可读。
+ *   · 渐变 / url(#..) / none / currentColor / 命名色无法稳定映射的，一律原样保留。
+ * ===========================================================================*/
+'use strict';
+
+const Palette = {
+  /* 常用风格色系。bg=背景, text=正文文字(可读前景), panel=浅灰面板/表面,
+   * accents=形状/强调色（按亮度升序，用于「暗→首、亮→末」的角色映射）。 */
+  PRESETS: {
+    ent_tech_dark: { name: '企业科技蓝·深底', bg: '#0B1628', text: '#F5F5F5', panel: '#16324F', accents: ['#1677FF', '#13C2C2', '#52C41A', '#FA8C16', '#69B1FF'] },
+    biz_white:     { name: '白底商务蓝',     bg: '#FFFFFF', text: '#1A1A1A', panel: '#F2F6FC', accents: ['#1677FF', '#13C2C2', '#52C41A', '#FA8C16', '#91CAFF'] },
+    dark_cyber:    { name: '深色未来科技',   bg: '#050B14', text: '#FFFFFF', panel: '#0E1B2E', accents: ['#00A8FF', '#00FFE0', '#8A5CFF', '#FF4ECD'] },
+    palantir:      { name: 'Palantir 本体', bg: '#F8FAFC', text: '#0F172A', panel: '#EEF2F7', accents: ['#2563EB', '#64748B', '#F97316', '#9333EA', '#16A34A'] },
+    ai_platform:   { name: 'AI 大模型平台',  bg: '#FFFFFF', text: '#111827', panel: '#F4F5FF', accents: ['#6366F1', '#A855F7', '#06B6D4', '#14B8A6', '#F59E0B'] },
+    finance_gov:   { name: '金融政企',       bg: '#F2F4F7', text: '#1A1A1A', panel: '#E3E8EE', accents: ['#003366', '#C8A951', '#008060', '#002B45'] },
+    aws_cloud:     { name: 'AWS 云原生',     bg: '#FFFFFF', text: '#16191F', panel: '#F1F3F5', accents: ['#FF9900', '#1E8900', '#2E73B8', '#8C4FFF', '#D13212'] }
+  },
+
+  names() { return Object.keys(this.PRESETS); },
+
+  label(name) { const p = this.PRESETS[name]; return p ? p.name : name; },
+
+  /* 把任意颜色归一为 #rrggbb；无法稳定映射（none/url/var/命名色解析失败）返回 null。 */
+  toHex(color) {
+    if (!color) return null;
+    let c = String(color).trim().toLowerCase();
+    if (!c || c === 'none' || c === 'transparent' || c === 'currentcolor') return null;
+    if (c.indexOf('url(') === 0 || c.indexOf('var(') === 0) return null;
+    if (/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(c)) {
+      if (c.length === 4) return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3];
+      return c.slice(0, 7);
+    }
+    try {                                   /* 命名色 → 借 canvas 解析为 hex */
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.fillStyle = c;
+      const h = ctx.fillStyle;
+      if (/^#[0-9a-f]{6}$/i.test(h)) return h;
+    } catch (e) { /* ignore */ }
+    return null;
+  },
+
+  hexToRgb(hex) {
+    const h = (hex || '').replace('#', '');
+    if (h.length < 6) return null;
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+  },
+
+  /* 感知亮度 0..1（sRGB 加权），用于角色排序 */
+  luminance(hex) {
+    const rgb = this.hexToRgb(hex); if (!rgb) return 0.5;
+    return (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+  },
+
+  _bbox(el) {
+    try { const b = el.getBBox(); if (b && isFinite(b.width) && isFinite(b.height)) return b; } catch (e) { /* ignore */ }
+    return null;
+  },
+
+  /* 文本角色类（在 <style> 里定义、专用于文字的 fill）：一律映射到目标 text 色，
+   * 保证任意主题下标题/正文/标签都可读。其余颜色类视为形状/表面色。 */
+  TEXT_ROLE: /^(title|subtitle|h1|h2|h3|h4|body|small|tiny|text|head|heading|label|caption|desc|note|lead|p|cap|t\d*|white|black)$/i,
+
+  /* 统一把单个颜色值按目标色系重着色。
+   *   isText=true  → 文字角色：一律目标 text 色（可读性优先）。
+   *   isText=false → 形状/表面：按亮度落到 bg / panel / accents（暗→首亮→末），
+   *                  保持「暗仍暗、亮仍亮」的语义在目标色系家族内。 */
+  _recolor(c, p, isText) {
+    const h = this.toHex(c); if (!h) return null;
+    if (isText) return p.text;
+    const L = this.luminance(h);
+    if (L < 0.04) return p.bg;                                  /* 近黑 → 背景 */
+    if (L > 0.9) return p.panel;                                /* 近白/浅灰 → 表面面板 */
+    const n = p.accents.length;                                 /* 彩色 → 按亮度取 accents 位 */
+    const idx = Math.max(0, Math.min(n - 1, Math.round(((L - 0.04) / 0.86) * (n - 1))));
+    return p.accents[idx];
+  },
+
+  /* 重着色一段 CSS 文本（<style> 内容）：按「规则」逐块处理——先判定该规则的选择器
+   * 是否文本角色，再对其 body 内所有颜色按角色/亮度重着色。比「向前 40 字符回溯」更稳健，
+   * 不受美化后 <style> 换行缩进影响。 */
+  _recolorCss(css, p) {
+    return css.replace(/([^{}]*)\{([^{}]*)\}/g, (m, selPart, body) => {
+      const name = (selPart || '').trim().replace(/^\./, '').split(/[\s,>:+~]/)[0];
+      const isText = this.TEXT_ROLE.test(name);
+      const newBody = body.replace(/#[0-9a-fA-F]{3,8}\b/g, (c) => {
+        const hex = (c.length === 4)
+          ? '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3]
+          : c.slice(0, 7);
+        return this._recolor(hex, p, isText) || c;
+      });
+      return selPart + '{' + newBody + '}';
+    });
+  },
+
+  /* 在活 DOM 上就地重着色；返回 true 表示已应用。调用方负责重渲染/导出。 */
+  apply(rt, name) {
+    const p = this.PRESETS[name]; if (!p) return false;
+    if (!rt || typeof rt.contentGroup !== 'function') return false;
+    const root = rt.contentGroup(); if (!root) return false;
+    const svgRoot = (typeof rt.root === 'function') ? rt.root() : null;
+    const canvas = svgRoot || root;
+    const cb = this._bbox(canvas);
+    const cbArea = cb ? cb.width * cb.height : 0;
+
+    const shapes = [];          /* 非文字实心元素 */
+    const bgCands = [];          /* 背景候选（覆盖 >50% 画布） */
+
+    const walk = root.querySelectorAll('*');
+    for (const el of walk) {
+      const tag = (el.tagName || '').toLowerCase();
+      if (tag === 'style') continue;                            /* <style> 由下方 svgRoot 统一处理 */
+      if (tag === 'text' || tag === 'tspan') {                  /* 文字：强制可读前景 */
+        el.setAttribute('fill', p.text);
+        continue;
+      }
+      const f = this.toHex(el.getAttribute('fill'));
+      const s = this.toHex(el.getAttribute('stroke'));
+      const bb = this._bbox(el);
+      const area = bb ? bb.width * bb.height : 0;
+      if (f || s) shapes.push({ el, fill: f, stroke: s, area });
+      if (f && cbArea > 0 && area > 0.5 * cbArea) bgCands.push({ el, fill: f, area });
+    }
+
+    /* <style> 可能挂在 svg 根而非 contentGroup 下：在整棵 svg 上统一重着色一次 */
+    for (const st of (svgRoot || root).querySelectorAll('style')) {
+      const txt = st.textContent || '';
+      const out = this._recolorCss(txt, p);
+      if (out !== txt) st.textContent = out;
+    }
+
+    /* 背景 = 覆盖画布最大面积的元素（强制为目标 bg，优先级最高） */
+    let bgEl = null;
+    if (bgCands.length) { bgCands.sort((a, b) => b.area - a.area); bgEl = bgCands[0].el; }
+
+    if (bgEl) bgEl.setAttribute('fill', p.bg);
+    for (const o of shapes) {
+      if (o.el === bgEl) continue;
+      if (o.fill) { const t = this._recolor(o.fill, p, false); if (t) o.el.setAttribute('fill', t); }
+      if (o.stroke) { const t = this._recolor(o.stroke, p, false); if (t) o.el.setAttribute('stroke', t); }
+    }
+    return true;
+  }
+};
+
+</script>
+<script>
+/* =============================================================================
+ * SVG Beautifier · 13 代码模式 + 配色切换系统（UI 接线）
+ *
+ * 两个功能：
+ *   ① 代码模式：左侧预览（svgcanvas 实渲染）、右侧编辑 SVG 源码；输入实时（防抖）
+ *      应用到预览，可「格式化 / 应用 / 关闭」。纯视觉编辑通道，不改文件落盘。
+ *   ② 配色切换：下拉选一套风格色系 → 调 Palette.apply 在活 DOM 上重着色（仅改颜色，
+ *      不改布局）；并把舞台底色一并切到该色系的背景色（Wireframe 模式强制白底）。
+ *
+ * 宪法约束（与 §22 / §23 一致）：这些都**不改内容语义**，只是视图/配色层；
+ *  切视图 / 切配色前后 rt.exportString() 的几何字节不变（仅颜色/属性随之变）。
+ * ===========================================================================*/
+'use strict';
+
+const CodeMode = {
+  ui: null,
+  area: null, status: null, mid: null, stage: null, selPalette: null, btnCode: null,
+  _timer: 0, _lastText: '',
+
+  init(ui) {
+    this.ui = ui;
+    this.mid = ui.$('mid');
+    this.stage = ui.$('stage');
+    this.area = ui.$('codeArea');
+    this.status = ui.$('codeStatus');
+    this.selPalette = ui.$('selPalette');
+    this.btnCode = ui.$('btnCode');
+    if (!this.area || !this.mid) return;
+
+    /* 配色下拉：填充风格色系 */
+    if (this.selPalette) {
+      for (const k of Palette.names()) {
+        const o = document.createElement('option');
+        o.value = k; o.textContent = Palette.label(k);
+        this.selPalette.appendChild(o);
+      }
+      this.selPalette.onchange = () => this.applyPalette(this.selPalette.value);
+    }
+
+    /* 代码模式开关 */
+    if (this.btnCode) this.btnCode.onclick = () => this.toggleCode();
+
+    /* 代码面板按钮 */
+    const fmt = ui.$('codeFormat'), ap = ui.$('codeApply'), cl = ui.$('codeClose');
+    if (fmt) fmt.onclick = () => { this.area.value = this.formatXml(Runtime.exportString()); this.status.textContent = '已格式化（导出当前画布）'; this.status.className = 'codeStatus ok'; };
+    if (ap) ap.onclick = () => this.applyCode(this.area.value, true);
+    if (cl) cl.onclick = () => this.toggleCode(false);
+
+    /* 实时编辑：输入防抖应用到预览 */
+    this.area.addEventListener('input', () => {
+      clearTimeout(this._timer);
+      this._timer = setTimeout(() => this.applyCode(this.area.value, false), 350);
+    });
+  },
+
+  /* 切换代码模式：左预览 / 右编辑 */
+  toggleCode(force) {
+    const on = (force === undefined) ? !this.mid.classList.contains('codemode') : force;
+    this.mid.classList.toggle('codemode', on);
+    if (this.btnCode) this.btnCode.classList.toggle('on', on);
+    if (on) {
+      this.area.value = Runtime.exportString();
+      this.status.textContent = '代码模式：编辑右侧源码，实时同步到左侧预览。';
+      this.status.className = 'codeStatus';
+      setTimeout(() => this.area.focus(), 30);
+    }
+  },
+
+  /* 把文本框里的 SVG 应用到预览（preview = 不弹窗的实时应用） */
+  applyCode(text, immediate) {
+    const t = (text || '').trim();
+    if (!t) { this.status.textContent = '空内容，无操作。'; this.status.className = 'codeStatus'; return; }
+    if (!immediate && t === this._lastText) return;
+    this._lastText = t;
+    let r;
+    try { r = Runtime.load(t); } catch (e) { r = { ok: false, err: (e && e.message) || '异常' }; }
+    if (!r || !r.ok) {
+      this.status.textContent = '✗ 应用失败：' + ((r && r.err) || '未知错误') + '（预览保持上一有效状态）';
+      this.status.className = 'codeStatus err';
+      return;
+    }
+    this.status.textContent = '✓ 已应用到预览';
+    this.status.className = 'codeStatus ok';
+    /* 内容被替换：重建分析态，刷新叠加层（非原图视图需要）；编辑基线同步重置 */
+    if (this.ui.view !== 'original') {
+      try { this.ui.ir = IR.build(Runtime, {}); this.ui.an = Analyzer.run(this.ui.ir, {}); this.ui.draw(); } catch (e) { /* 忽略 */ }
+    }
+    if (this.ui.editing && typeof Editor !== 'undefined' && Editor.reset) Editor.reset(Runtime);
+  },
+
+  /* 应用一套配色（仅重着色，不改布局）。
+   * 首次切到某风格时，快照「切之前的画布」；选「原图」时回滚该快照，从而可无损还原。 */
+  applyPalette(name) {
+    if (!name || name === '__original__') {
+      if (this._prePaletteSnapshot) {
+        try { Runtime.load(this._prePaletteSnapshot); } catch (e) { /* 忽略 */ }
+        this.ui.activePaletteBg = '';
+        if (this.stage) this.stage.style.background = '';
+        if (this.ui.view !== 'original') {
+          try { this.ui.ir = IR.build(Runtime, {}); this.ui.an = Analyzer.run(this.ui.ir, {}); this.ui.draw(); } catch (e) { /* 忽略 */ }
+        }
+        this.syncCode();
+      }
+      this.status.textContent = '已恢复原始配色'; this.status.className = 'codeStatus';
+      return;
+    }
+    const p = Palette.PRESETS[name];
+    if (!p) { this.status.textContent = '✗ 未知配色：' + name; this.status.className = 'codeStatus err'; return; }
+    if (!this._prePaletteSnapshot) this._prePaletteSnapshot = Runtime.exportString();  /* 首次：存原图 */
+    const ok = Palette.apply(Runtime, name);
+    if (!ok) { this.status.textContent = '✗ 配色应用失败'; this.status.className = 'codeStatus err'; return; }
+    this.ui.activePaletteBg = p.bg;
+    if (this.stage) this.stage.style.background = (this.ui.view === 'wireframe') ? '' : p.bg;
+    if (this.ui.view !== 'original') {
+      try { this.ui.ir = IR.build(Runtime, {}); this.ui.an = Analyzer.run(this.ui.ir, {}); this.ui.draw(); } catch (e) { /* 忽略 */ }
+    }
+    this.syncCode();
+    this.status.textContent = '✓ 已应用配色：' + p.name; this.status.className = 'codeStatus ok';
+  },
+
+  /* 代码模式开启时，把当前画布导出同步进文本框（select/run/配色 后调用） */
+  syncCode() {
+    if (!this.area || !this.mid.classList.contains('codemode')) return;
+    const cur = Runtime.exportString();
+    if (cur && cur !== this.area.value) this.area.value = cur;
+  },
+
+  /* 轻量 XML 缩进格式化（足够 SVG 用；跳过标签间的纯空白文本节点） */
+  formatXml(xml) {
+    const re = /<[^>]+>|[^<]+/g;
+    const toks = []; let mm;
+    while ((mm = re.exec(xml))) toks.push(mm[0]);
+    let depth = 0, out = '', first = true;
+    for (const t of toks) {
+      if (t[0] !== '<') { if (t.trim() === '') continue; out += t.trim(); continue; }
+      const isClose = t.indexOf('</') === 0;
+      const isSelf = /\/>$/.test(t) || t.indexOf('<?') === 0 || t.indexOf('<!--') === 0 || t.indexOf('<!') === 0;
+      if (isClose) depth = Math.max(0, depth - 1);
+      if (!first) out += '\n' + '  '.repeat(depth);
+      out += t; first = false;
+      if (!isClose && !isSelf) depth++;
+    }
+    return out;
+  }
+};
+
+</script>
 <script>window.__SVGB_IMGPATH = 'vendor';</script>
 <script>
 /* =============================================================================
@@ -6680,6 +7025,8 @@ const UI = {
     Editor.attach(Runtime, (what, extra) => this.onEditor(what, extra));
     await this.select(this.samples.findIndex(s => s.expectClean && !s.real) >= 0
       ? this.samples.findIndex(s => s.expectClean && !s.real) : 0);
+    /* 代码模式 + 配色切换系统（src/13_codemode.js） */
+    if (typeof CodeMode !== 'undefined') CodeMode.init(this);
     return true;
   },
 
@@ -6895,6 +7242,7 @@ const UI = {
     if (this.editing) { this.paintEdit(); this.paintLiveScore(); }
     this.log(`[载入] ${s.id}  ${ld.w}×${ld.h}${ld.normalized ? ' (已规范化尺寸)' : ''}  ${Date.now() - st}ms`);
     this.paintLedger(null); this.paintDec(null);
+    if (typeof CodeMode !== 'undefined') CodeMode.syncCode();
   },
 
   /* 重新构建 IR + 分析（只读，不改 DOM） */
@@ -6939,6 +7287,8 @@ const UI = {
     /* Wireframe / 白板：用 CSS 把真实内容去色为黑白（见 ui.html 的 #stage.wireframe
      * 规则），不是隐藏内容。纯视觉 class，切到其它视图即移除，内容恢复彩色。 */
     if (this.stage) this.stage.classList.toggle('wireframe', v === 'wireframe');
+    /* 配色主题只作用于彩色视图；Wireframe 强制白底（黑白语义），故重置舞台底色 */
+    if (this.stage) this.stage.style.background = (v === 'wireframe') ? '' : (this.activePaletteBg || '');
     this.draw();
   },
 
@@ -7020,6 +7370,7 @@ const UI = {
       this.log(`[${mode}] ${s.id} 策略=${strategy} ${nf(rec.before.score, 1)}→${nf(rec.after.score, 1)} (Δ${nf(rec.delta, 2)}) `
         + `轮=${rec.ledger.length} op=${(rec.proposed || []).length || (rec.ops && rec.ops.ops ? rec.ops.ops.length : 0)} ${Date.now() - t0}ms`
         + (deny.length ? ` · 已按清单取消 ${deny.length} 项` : ''));
+      if (typeof CodeMode !== 'undefined') CodeMode.syncCode();
     } catch (e) {
       this.log('[错误] ' + (e && e.message));
       this.$('statBadge').textContent = '运行失败';

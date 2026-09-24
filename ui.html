@@ -63,6 +63,21 @@
   /* 舞台 */
   #stage{position:relative;flex:1 1 auto;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}
   #host{position:absolute;left:0;top:0;width:100%;height:100%;overflow:auto}
+
+  /* 代码模式：#mid 进入 codemode 时，#stage 与 #codePane 左右并排（左预览 / 右编辑） */
+  #stageRow{flex:1 1 auto;min-height:0;display:flex;gap:10px}
+  #mid.codemode #stage{width:54%;flex:0 0 54%}
+  #mid.codemode #codePane{display:flex}
+  #codePane{display:none;flex:1 1 auto;min-width:0;flex-direction:column;gap:6px}
+  #codePane .codeBar{display:flex;align-items:center;gap:6px}
+  #codePane .codeBar b{font-size:12px;color:var(--tx2)}
+  #codeArea{flex:1 1 auto;width:100%;min-height:0;resize:none;box-sizing:border-box;
+    font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--tx);
+    background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:9px 10px;tab-size:2;white-space:pre;overflow:auto}
+  #codeArea:focus{outline:none;border-color:var(--acc)}
+  .codeStatus{font-size:11px;color:var(--tx3);min-height:15px}
+  .codeStatus.err{color:#e5484d}
+  .codeStatus.ok{color:#16a34a}
   svg.svgb-ovl{position:absolute;left:0;top:0;pointer-events:none;z-index:9;overflow:visible}
   /* Wireframe / 白板模式：渲染**真实内容**为纯黑白（官方 SVG-Edit 同款做法）。
    *   —— 不是「隐藏内容 + 画 IR 骨架」，而是用 CSS 把真实 #svgcontent 去色：
@@ -254,6 +269,12 @@
   <button id="btnFix" class="primary">一键美化</button>
   <button id="btnReset" class="ghost">重置</button>
   <button id="btnExport" class="ghost">导出 SVG</button>
+  <div class="grp"><label>配色</label>
+    <select id="selPalette" title="一键切换风格色系（仅重着色，不改布局）">
+      <option value="__original__">原图配色</option>
+    </select>
+  </div>
+  <button id="btnCode" class="ghost" title="代码模式：左侧预览、右侧编辑 SVG 源码（实时生效）">代码</button>
   <div class="spacer"></div>
   <span id="layaBadge" class="badge off">Laya 未探测</span>
   <span id="statBadge" class="badge">—</span>
@@ -318,9 +339,22 @@
       <button id="eUndo" title="撤销（走 svgcanvas 的 undoMgr）">撤销</button>
       <button id="eRedo" title="重做">重做</button>
     </div>
-    <div id="stage">
-      <div id="host"></div>
-      <div id="drop"><b>松开以打开 SVG</b><span>支持一次拖入多个文件；也可以拖入一段 SVG 文本</span></div>
+    <div id="stageRow">
+      <div id="stage">
+        <div id="host"></div>
+        <div id="drop"><b>松开以打开 SVG</b><span>支持一次拖入多个文件；也可以拖入一段 SVG 文本</span></div>
+      </div>
+      <div id="codePane">
+        <div class="codeBar">
+          <b>SVG 代码</b>
+          <span class="spacer"></span>
+          <button id="codeFormat" class="mini" title="把当前画布导出为带缩进的格式化 SVG">格式化</button>
+          <button id="codeApply" class="mini primary" title="立即应用文本框里的 SVG（绕过防抖）">应用</button>
+          <button id="codeClose" class="mini" title="退出代码模式">关闭</button>
+        </div>
+        <textarea id="codeArea" spellcheck="false" placeholder="在此编辑 SVG 源码；输入会实时（防抖）应用到左侧预览。"></textarea>
+        <div id="codeStatus" class="codeStatus">—</div>
+      </div>
     </div>
   </section>
 
@@ -393,6 +427,8 @@
 <script src="src/11_realsvgs.js"></script>
 <script src="src/08_ui.js"></script>
 <script src="src/09_editor.js"></script>
+<script src="src/12_palette.js"></script>
+<script src="src/13_codemode.js"></script>
 <script>
 /* =============================================================================
  * 产品页控制器
@@ -445,6 +481,8 @@ const UI = {
     Editor.attach(Runtime, (what, extra) => this.onEditor(what, extra));
     await this.select(this.samples.findIndex(s => s.expectClean && !s.real) >= 0
       ? this.samples.findIndex(s => s.expectClean && !s.real) : 0);
+    /* 代码模式 + 配色切换系统（src/13_codemode.js） */
+    if (typeof CodeMode !== 'undefined') CodeMode.init(this);
     return true;
   },
 
@@ -660,6 +698,7 @@ const UI = {
     if (this.editing) { this.paintEdit(); this.paintLiveScore(); }
     this.log(`[载入] ${s.id}  ${ld.w}×${ld.h}${ld.normalized ? ' (已规范化尺寸)' : ''}  ${Date.now() - st}ms`);
     this.paintLedger(null); this.paintDec(null);
+    if (typeof CodeMode !== 'undefined') CodeMode.syncCode();
   },
 
   /* 重新构建 IR + 分析（只读，不改 DOM） */
@@ -704,6 +743,8 @@ const UI = {
     /* Wireframe / 白板：用 CSS 把真实内容去色为黑白（见 ui.html 的 #stage.wireframe
      * 规则），不是隐藏内容。纯视觉 class，切到其它视图即移除，内容恢复彩色。 */
     if (this.stage) this.stage.classList.toggle('wireframe', v === 'wireframe');
+    /* 配色主题只作用于彩色视图；Wireframe 强制白底（黑白语义），故重置舞台底色 */
+    if (this.stage) this.stage.style.background = (v === 'wireframe') ? '' : (this.activePaletteBg || '');
     this.draw();
   },
 
@@ -785,6 +826,7 @@ const UI = {
       this.log(`[${mode}] ${s.id} 策略=${strategy} ${nf(rec.before.score, 1)}→${nf(rec.after.score, 1)} (Δ${nf(rec.delta, 2)}) `
         + `轮=${rec.ledger.length} op=${(rec.proposed || []).length || (rec.ops && rec.ops.ops ? rec.ops.ops.length : 0)} ${Date.now() - t0}ms`
         + (deny.length ? ` · 已按清单取消 ${deny.length} 项` : ''));
+      if (typeof CodeMode !== 'undefined') CodeMode.syncCode();
     } catch (e) {
       this.log('[错误] ' + (e && e.message));
       this.$('statBadge').textContent = '运行失败';
