@@ -27,7 +27,10 @@ const Views = {
     node: '#2f6fed', nodeFill: 'rgba(47,111,237,0.06)',
     edge: '#0d9488', baseline: '#c2740a',
     critical: '#d64545', high: '#c2740a', medium: '#2f6fed', low: '#98a2b3',
-    before: '#98a2b3', after: '#0d9488'
+    before: '#98a2b3', after: '#0d9488',
+    /* Wireframe 专用：纯黑白灰，不引入任何彩色（diagnostic/proposed 才用上面的优先级配色） */
+    wf: { node: '#1f1f1f', nodeFill: 'rgba(0,0,0,0.04)',
+          edge: '#333333', baseline: '#555555' }
   },
 
   /* hostEl = 叠加层的宿主元素（必须是 svgcanvas 挂载点的**兄弟容器**，
@@ -113,13 +116,14 @@ const Views = {
   wireframe(rt, ir, zoom) {
     const g = this.begin(rt, 'wf'); if (!g) return { drawn: 0 };
     const level = zoom < 0.5 ? 1 : (zoom <= 2.0 ? 2 : 3);
+    const WF = this.PAL.wf; /* 纯黑白灰，不引入彩色 */
     let n = 0;
     /* Edge 骨架（L2+）：先画，压在节点框下面 */
     if (level >= 2) {
       for (const e of ir.edges) {
         const pts = e.pts.map(p => `${r2(p.x)},${r2(p.y)}`).join(' ');
         this.el(g, 'polyline', {
-          points: pts, fill: 'none', stroke: this.PAL.edge,
+          points: pts, fill: 'none', stroke: WF.edge,
           'stroke-width': 1.2, 'stroke-dasharray': '5 3', opacity: 0.85
         });
         /* 字段名以 03_ir.js#makeEdge 为准：markerEnd / markerStart（不是 arrow）。
@@ -132,7 +136,7 @@ const Views = {
           const p2 = { x: a.x - s * Math.cos(ang + 0.4), y: a.y - s * Math.sin(ang + 0.4) };
           this.el(g, 'polygon', {
             points: `${r2(a.x)},${r2(a.y)} ${r2(p1.x)},${r2(p1.y)} ${r2(p2.x)},${r2(p2.y)}`,
-            fill: this.PAL.edge, stroke: 'none'
+            fill: WF.edge, stroke: 'none'
           });
         }
         n++;
@@ -140,30 +144,30 @@ const Views = {
     }
     /* Node 框（全层级） */
     for (const nd of ir.nodes) {
-      this.rect(g, nd.geomBox, { fill: this.PAL.nodeFill, stroke: this.PAL.node, 'stroke-width': 1 });
+      this.rect(g, nd.geomBox, { fill: WF.nodeFill, stroke: WF.node, 'stroke-width': 1 });
       if (nd.labels.length) {
         const l = nd.labels[0];
         this.el(g, 'line', {
           x1: r2(R.cx(nd.geomBox)), y1: r2(R.cy(nd.geomBox)),
           x2: r2(R.cx(l.bbox)), y2: r2(R.cy(l.bbox)),
-          stroke: this.PAL.baseline, 'stroke-width': 0.8, 'stroke-dasharray': '2 2'
+          stroke: WF.baseline, 'stroke-width': 0.8, 'stroke-dasharray': '2 2'
         });
       }
       if (level >= 3) {
         /* mkId('n') → 'n3'，序号要去掉小写前缀（不是 'N'） */
         this.text(g, nd.geomBox.x, nd.geomBox.y - 4, '#' + String(nd.id).replace(/^[a-z]/, ''),
-          { fill: this.PAL.node, 'font-size': 9, 'font-family': 'ui-monospace,monospace' });
+          { fill: WF.node, 'font-size': 9, 'font-family': 'ui-monospace,monospace' });
         for (const l of nd.labels) {
           this.el(g, 'line', {
             x1: r2(l.bbox.x), y1: r2(R.cy(l.bbox)), x2: r2(R.right(l.bbox)), y2: r2(R.cy(l.bbox)),
-            stroke: this.PAL.baseline, 'stroke-width': 0.8
+            stroke: WF.baseline, 'stroke-width': 0.8
           });
         }
       }
       n++;
     }
     /* 自由文本（L3 才显示，否则只是噪声） */
-    if (level >= 3) for (const t of ir.texts) this.rect(g, t.bbox, { fill: 'none', stroke: this.PAL.baseline, 'stroke-width': 0.8, 'stroke-dasharray': '3 2' });
+    if (level >= 3) for (const t of ir.texts) this.rect(g, t.bbox, { fill: 'none', stroke: WF.baseline, 'stroke-width': 0.8, 'stroke-dasharray': '3 2' });
     return { drawn: n, level, zoom: r2(zoom) };
   },
 

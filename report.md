@@ -1015,3 +1015,35 @@ Uncaught TypeError: Cannot read properties of null (reading 'focus')
 如需彻底消除，可在 `svgb_beautifier.html` 经 http(s) 托管（推荐），或后续把该 cursor
 改为内联 data-URI（会动到 svgcanvas 的 imgPath 机制，留作可选优化）。
 
+---
+
+## §22 Wireframe 视图应「只显示黑白」
+
+### 22.1 现象（用户反馈）
+切到 Wireframe 视图后，画面**仍有颜色**：既能看到原始彩色的 SVG 内容透出来，
+叠加的骨架线本身也是蓝/青/橙（node `#2f6fed` / edge `#0d9488` / baseline `#c2740a`）。
+预期：Wireframe 只显示黑白灰的结构骨架。
+
+### 22.2 根因
+Wireframe 是**非侵入叠加层**（`src/08_ui.js` 的 `Views`）：它在 svgcanvas 之上叠一个
+独立的 `svg.svgb-ovl`，**原始内容 DOM 一字不改**。因此切到 wireframe 时：
+- 原始彩色内容 `#svgcontent` 从头到尾都是可见的，只是被骨架线盖了一层 → 颜色透出；
+- 骨架线本身还用了彩色 PAL（`Views.PAL`），并非黑白。
+
+### 22.3 修复
+两处，均在视图层，不改内容 DOM：
+1. **隐藏原始内容**：`ui.html` 的 `setView(v)` 在切到 wireframe 时给 `#stage` 加
+   `wf-content-hidden` 类，配套 CSS `#stage.wf-content-hidden #svgcontent{visibility:hidden}`；
+   切到 original/diagnostic/proposed 时移除该类 → 内容恢复。`visibility` 不改布局，
+   叠加层靠 `getScreenCTM` 对齐依旧准确；用 class 而非给 `#svgcontent` 写 inline style，
+   是为了不被 svgcanvas 内部对 `#svgcontent` 的 transform 等 inline 样式覆盖。
+2. **骨架纯黑白灰**：`Views.PAL` 新增 `wf:{node:'#1f1f1f',nodeFill:'rgba(0,0,0,0.04)',
+   edge:'#333333',baseline:'#555555'}`，`wireframe()` 改用它，去掉全部彩色。
+   （diagnostic/proposed 仍需优先级配色，保持原 PAL 不动。）
+
+### 22.4 验证
+新增 `tests/regress_wireframe.cjs`（无头 Edge）：载入真实样例 → 切 wireframe →
+断言 `#svgcontent` 计算样式 `visibility==='hidden'`、骨架 wf 组的 stroke/fill 不含任何彩色 PAL 值；
+再切回 original / diagnostic 断言内容恢复可见。结果 6/6 通过，无 pageerror。
+
+
