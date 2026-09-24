@@ -127,7 +127,7 @@ SVGB_TARGET=svgb_beautifier.html node tests/edit_e2e.cjs
 ```
 svgedit/
 ├── ui.html                  # 产品页（源码形态：直连 vendor + src，可断点调试）
-├── svgb_beautifier.html     # ★ 单文件产物：7 425 行 / 1 578 008 B（由 build.py 生成）
+├── svgb_beautifier.html     # ★ 单文件产物：8 694 行 / 1 732 346 B（由 build.py 生成）
 ├── dev.html                 # 开发验证台：全量矩阵 / 往返 / 锚点探针
 ├── build.py                 # 构建脚本（仅标准库）
 ├── report.md                # 实现报告：全部数字可复跑

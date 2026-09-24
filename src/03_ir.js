@@ -145,11 +145,28 @@ const IR = {
      *   非背景包含节点（smallest-enclosing），背景板与更大的容器不再抢夺标签。 */
     const cvBox = R.mk(0, 0, canvas.w || 0, canvas.h || 0);
     const cvArea = cvBox.w > 0 && cvBox.h > 0 ? R.area(cvBox) : 0;
+    /* ★F11 根因修复：isBg 必须相对**作者画布**判定，而不是可能已被中途改过的当前画布。
+     * 实测（tests/diag_batch.cjs）：本体图 n3 = rect#svg_5（满版外框）在作者画布 1920×1080 下
+     * 面积比 0.86 → isBg=true；一次**被接受的** spacing|distribute_equal 让 canvasTail 调用
+     * Runtime.setResolution → 画布变成 2036.5×1129 → 同一块 n3 面积比掉到 0.78 → isBg=false
+     * → 满版外框降级成普通节点，把 H1 标题 / 副标题 / 图例**全部认领为自己的 labels**，
+     * 于是 text_overflow 的 move_text 批次从 4 个 op 膨胀成 10 个，生成了把标题整体平移
+     * (697.5, 449.5)px 到画布中心的 opFixAnchor「搬运动作」；标题随即压在文档序更靠后的
+     * 不透明容器下 → 2 条 occlusion → occlusion.density 恰好等于 collSat 0.5 →
+     * metrics.collision 从 96 **直接塌到 0** → 整批 10 op 被门禁全数否决。
+     * 症结是「谁是满版底板」这一**语义**随画布尺寸漂移，而不是那些 op 本身写错。
+     * 因此把判据钉在作者画布上：画布可以被 canvasTail 撑大（既有功能，保留），
+     * 但底板语义不随之改变；二者解耦后重算 IR 才是幂等的。
+     * 若 sopt 没带 authoredCanvas（例如直接调 IR.build 的测试/工具），退回当前画布，
+     * 行为与改动前**逐位一致**。 */
+    const bgBox = (o.authoredCanvas && o.authoredCanvas.w > 0 && o.authoredCanvas.h > 0)
+      ? R.mk(0, 0, o.authoredCanvas.w, o.authoredCanvas.h) : cvBox;
+    const bgArea = R.area(bgBox) > 0 ? R.area(bgBox) : cvArea;
     for (const n of nodes) {
       /* 背景板 = 自身面积覆盖 ≥85% 画布的节点（满版底板 / 大容器），不是「被画布包住」。
        * ★ 注意：用面积比而非 coverRatio(n,cvBox) —— 后者是按 min(面积) 归一，
        *   任何落在画布内的节点都会得到 ≈1.0，会把小色块也误判成背景。 */
-      n.isBg = cvArea > 0 && (R.area(n.geomBox) / cvArea) >= 0.85;
+      n.isBg = bgArea > 0 && (R.area(n.geomBox) / bgArea) >= 0.85;
     }
     for (const ft of freeTexts) {
       const owners = nodes.filter(n =>
@@ -166,11 +183,39 @@ const IR = {
     for (const n of nodes) {
       n.textW = n.labels.length ? Math.max(...n.labels.map(l => l.bbox.w)) : 0;
       n.textH = n.labels.length ? R.union(n.labels.map(l => l.bbox)).h : 0;
-      n.importance = (n.labels.map(l => l.text.length).reduce((a, b) => a + b, 0) || 0) + 1;
       n.area = R.area(n.bbox);
     }
     const areas = nodes.map(n => n.area).sort((a, b) => a - b);
     const medArea = areas.length ? areas[Math.floor(areas.length / 2)] : 0;
+
+    /* ---------- 6b. 语义角色（F7）+ 视觉权重 ----------
+     * 为什么需要 role：tiny_element 的旧判据**只看面积**（< 中位面积 × tinyRatio），
+     * 于是图例色块、分隔线、装饰圆点这类**无标签装饰件**也被当成「过小的数据节点」，
+     * 被成批放大 —— 实测本体图 grow_to_min 让 collision 96→16（Δ−80）。
+     * role 把「这个元素是否承载语义」显式化，让 tiny_element 只作用在真正的数据节点上。
+     * 判据全部是确定性几何/属性，按序短路；data-role 方言优先（与 dialect 判定同源）。 */
+    for (const n of nodes) {
+      const dr = n.elem && n.elem.getAttribute ? n.elem.getAttribute('data-role') : null;
+      const hasLabel = n.labels.length > 0;
+      let role;
+      if (dr) role = String(dr).trim();
+      else if (n.isBg) role = 'container';                       /* 满版底板 / 大容器 */
+      else if (hasLabel) role = 'data';                          /* ★ 有标签 = 承载语义（即使过小） */
+      else if (n.area < medArea * 0.35) role = 'decoration';     /* 无标签小件：色块 / 圆点 */
+      else if (n.bbox.w <= 4 || n.bbox.h <= 4) role = 'decoration';  /* 细线 / 发丝件 */
+      else role = 'shape';                                       /* 无标签的承载形状（面板底、分区块） */
+      n.role = role;
+    }
+
+    /* 视觉权重：语义角色 × 面积相对量 × 标签量。全为正、量纲无关。
+     * 旧实现只是「标签字数 + 1」，完全不含「谁是主体」，导致 distribute_weighted
+     * 把面积差一个量级的容器与色块按同一数量级分配间距。下界恒 > 0，避免 wsum 除零。 */
+    const ROLE_W = { container: 1.0, data: 1.6, shape: 0.8, decoration: 0.35 };
+    for (const n of nodes) {
+      const textLen = n.labels.reduce((a, l) => a + l.text.length, 0);
+      const areaW = medArea > 0 ? clamp(Math.sqrt(n.area / medArea), 0.35, 3) : 1;
+      n.importance = r2((ROLE_W[n.role] || 1) * areaW * (1 + textLen * 0.6));
+    }
 
     /* ---------- 7. 边端点 → 源/目标节点 ---------- */
     for (const e of edges) {
@@ -189,9 +234,21 @@ const IR = {
     const boxes = nodes.map(n => n.bbox).concat(edges.map(e => R.fromPoints(e.pts)), texts.map(t => t.bbox));
     const contentBox = R.union(boxes) || R.mk(0, 0, canvas.w, canvas.h);
 
+    /* ---------- 8b. 区域图（F5，软依赖）----------
+     * 语义区域在源 SVG 里显式存在（分节 <g> + 前置注释名），但扁平 IR 把它丢掉了，
+     * 于是「中央板块过挤、两侧过空」这类**全局布局**问题无处度量（只能看全画布 canvas）。
+     * 软依赖写法：RegionGraph 未加载、或内部失败返回 null 时 regions = null；
+     * 下游所有区域级维度必须把 null 解释为「不适用 → 满分且不报 issue」，
+     * 绝不能解释为「0 分」，否则每一张没有分组结构的扁平 SVG 都会被凭空扣分。 */
+    let regions = null;
+    if (typeof RegionGraph !== 'undefined' && RegionGraph && RegionGraph.build) {
+      try { regions = RegionGraph.build(rt, content, nodes, canvas, { svgText: o.svgText || null }); }
+      catch (e) { regions = null; notes.push('区域图构建失败：' + (e && e.message ? e.message : String(e))); }
+    }
+
     const ir = {
       ok: true, canvas, nodes, edges, texts, freeTexts: texts, decorations, preserved,
-      dialect, medArea, contentBox, opts: o,
+      dialect, medArea, contentBox, opts: o, regions,
       notes,
       stats: {
         nodes: nodes.length, edges: edges.length, labels: nodes.reduce((a, n) => a + n.labels.length, 0) + texts.length,

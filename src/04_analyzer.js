@@ -52,6 +52,7 @@ const Analyzer = {
     raw.edgeRouting = this.edgeRouting(ir, o);
     raw.style = this.style(ir, o);
     raw.canvas = this.canvas(ir, o);
+    raw.region = this.regionMetrics(ir, o);
 
     const metrics = {
       collision: this.sc(raw.collision.density + raw.occlusion.density, o.collSat),
@@ -71,6 +72,89 @@ const Analyzer = {
     for (const it of issues) counts[it.type] = (counts[it.type] || 0) + 1;
 
     return { ok: true, metrics, score, raw, issues, counts, weights: this.WEIGHTS, opts: o };
+  },
+
+  /* ==================== 区域级度量（F6 · 第一段：可观不可修） ====================
+   * 动机：评分里唯一的"布局"维度是全画布 canvas（边距/溢出/利用率），没有任何
+   * 区域级的密度、留白、视觉层级。于是「中央板块过挤、两侧过空」这类**全局布局**
+   * 问题在评分里不可表达，门也就无从拦截 —— 这正是"局部规则正确、全局布局恶化"
+   * 的机制性原因（不是观感问题）。
+   *
+   * ★ 第一段只写入 raw，**不进 METRIC_KEYS / WEIGHTS / score**。
+   * 理由：现有维度已经在幻灯片域误报（实测 6 张真实图 style / spacing 恒为 0），
+   * 在观测到新维度在全部样例上的分布之前就给它权重，等于把误报直接写进总分。
+   * 流程：先用既有 sweep 收集分布 → 定标 sat → 再提升为"可修"（第二段）。
+   *
+   * ★ 不适用（applicable=false）必须解释为"满分且不报 issue"，**不能**解释为 0 分：
+   * 否则每一张没有分组结构的扁平 SVG 都会被凭空扣分。
+   *
+   * 口径说明：视觉权重用「区域面积占比 × 平均字号」而**不含对比度** ——
+   * contrastRatio 在 06_geometry.js（本文件之后加载），第一段刻意不引入该耦合；
+   * 提升为第二段时再补，届时可一并纳入 sweep 定标。 */
+  regionMetrics(ir, o) {
+    const na = { applicable: false, n: 0, balance: 1, whitespace: 0, hierarchy: 0 };
+    const rg = ir && ir.regions;
+    if (!rg || !rg.regions || !rg.regions.length) return na;
+    const panels = rg.regions.filter(r => r.kind === 'panel' || r.kind === 'card');
+    if (panels.length < 2) return Object.assign({}, na, { n: panels.length });
+
+    const cvA = Math.max(1, (ir.canvas.w || 0) * (ir.canvas.h || 0));
+    const nById = new Map((ir.nodes || []).map(n => [n.id, n]));
+    const membersOf = r => (r.members || []).map(id => nById.get(id)).filter(Boolean);
+    const labeledOf = r => membersOf(r).filter(n => n.labels && n.labels.length).length;
+    const avgFontOf = r => {
+      let s = 0, c = 0;
+      for (const n of membersOf(r)) for (const l of (n.labels || [])) { s += (l.fontSize || 0); c++; }
+      return c ? Math.max(1, s / c) : 1;
+    };
+
+    /* ① 区域均衡：面板墨密度的极差（按最大值归一，故 d ∈ [0,1)） */
+    const dens = panels.map(r => (typeof r.inkDensity === 'number' ? r.inkDensity : 0));
+    const mx = Math.max.apply(null, dens), mn = Math.min.apply(null, dens);
+    const balance = mx > 0 ? (mx - mn) / mx : 0;
+    const worst = panels[dens.indexOf(mx)] || null, best = panels[dens.indexOf(mn)] || null;
+
+    /* ② 留白：只统计「本应承载内容」的面板（≥2 个成员且 ≥1 个带标签成员）。
+     * ★ 只有"过挤"方向计入 d；"过空"方向单独记入 looseItems 仅作报警 ——
+     *   大片留白可能是有意设计，而且几何引擎**无法生成内容去填满留白**
+     *   （那是语义生成，超出能力）；强行做只会把文字挪来挪去。 */
+    const elig = panels.filter(r => (r.members || []).length >= 2 && labeledOf(r) >= 1);
+    let tightSum = 0;
+    const looseItems = [], tightItems = [];
+    for (const r of elig) {
+      const w = (typeof r.whitespace === 'number') ? r.whitespace : 0;
+      const tight = clamp((0.22 - w) / 0.22, 0, 1);
+      const loose = clamp((w - 0.62) / 0.38, 0, 1);
+      tightSum += tight;
+      if (tight > 0) tightItems.push({ id: r.id, name: r.name || '', whitespace: r2(w), pen: r2(tight) });
+      if (loose > 0) looseItems.push({ id: r.id, name: r.name || '', whitespace: r2(w), pen: r2(loose) });
+    }
+    const whitespace = elig.length ? tightSum / elig.length : 0;
+
+    /* ③ 视觉层级：语义重要性秩 与 视觉权重秩 的不一致率（逆序对比例） */
+    const visOf = r => (R.area(r.bbox) / cvA) * (avgFontOf(r) / 16);
+    const semOf = r => (r.name ? 1 : 0) + ((r.members || []).length >= 2 ? 1 : 0) + (labeledOf(r) >= 1 ? 1 : 0);
+    let disc = 0, pairs = 0;
+    for (let i = 0; i < panels.length; i++) {
+      for (let j = i + 1; j < panels.length; j++) {
+        const ds = semOf(panels[i]) - semOf(panels[j]);
+        const dv = visOf(panels[i]) - visOf(panels[j]);
+        if (ds === 0 || dv === 0) continue;      /* 并列不计入，避免把平局算成不一致 */
+        pairs++;
+        if ((ds > 0) !== (dv > 0)) disc++;
+      }
+    }
+
+    return {
+      applicable: true, n: panels.length,
+      balance: r2(balance), whitespace: r2(whitespace), hierarchy: pairs ? r2(disc / pairs) : 0,
+      worstRegion: worst ? { id: worst.id, name: worst.name || '', inkDensity: r2(dens[dens.indexOf(mx)]) } : null,
+      bestRegion: best ? { id: best.id, name: best.name || '', inkDensity: r2(mn) } : null,
+      tiePairs: pairs, looseItems, tightItems,
+      regions: panels.map(r => ({ id: r.id, kind: r.kind, name: r.name || '',
+                                   inkDensity: r2(r.inkDensity || 0), whitespace: r2(r.whitespace || 0),
+                                   members: (r.members || []).length }))
+    };
   },
 
   /* ========================== 1. 节点碰撞 ========================== */
@@ -415,8 +499,16 @@ const Analyzer = {
         { margins: raw.canvas.margins, utilization: raw.canvas.utilization, overflow: raw.canvas.overflow },
         ['rebalance_canvas', 'keep_canvas']);
     }
-    /* tiny_element：有标签但远小于中位面积的节点（标签必然不可读） */
-    const tiny = ir.nodes.filter(n => n.area < ir.medArea * (ir.opts.tinyRatio || 0.35) && n.labels.length > 0);
+    /* tiny_element：有标签但远小于中位面积的节点（标签必然不可读）
+     * ★F7 防御性收窄：容器/装饰件不进此类。**请注意这不是本体图那 8 条的成因** ——
+     * 实测那 8 条全部是真实的有标签数据节点（Validator / Repository / 数据语义化 …），
+     * 该样本 decoration 数为 **0**，所以这条过滤在它上面是 no-op。
+     * 它防的是另一类图：带标签的图例色块、带 `data-role="decoration"` 的方言标注件。
+     * 本体图 tiny_element 成批放大导致 collision 96→16 的问题由 **F1 的 item 级增量提交**
+     * 解决（每个 tiny 节点本就是独立 item，按 item 提交后只有不撞的那些会生效）。 */
+    const tinyEligible = n => n.role === 'data' || n.role === undefined;
+    const tiny = ir.nodes.filter(n => n.area < ir.medArea * (ir.opts.tinyRatio || 0.35)
+      && n.labels.length > 0 && tinyEligible(n));
     for (const n of tiny) {
       add('tiny_element', [n.id], 'low',
         { area: r2(n.area), medArea: r2(ir.medArea), ratio: r2(n.area / Math.max(1, ir.medArea)), desc: n.describe },
@@ -449,10 +541,41 @@ const Analyzer = {
   }
 };
 
+/* paint 引用解析缓存：normColor 在 occlusion 的 O(文字 × 节点) 循环里被反复调用，
+ * 每个 url(#id) 都去查 DOM 会明显变慢，故按引用串缓存解析结果。 */
+const PAINT_REF_CACHE = new Map();
+
+function paintRefExists(id) {
+  if (PAINT_REF_CACHE.has(id)) return PAINT_REF_CACHE.get(id);
+  let ok = false;
+  try {
+    const root = (typeof Runtime !== 'undefined' && Runtime.root) ? Runtime.root() : null;
+    if (root) {
+      ok = !!(root.getElementById ? root.getElementById(id) : null);
+      if (!ok && root.querySelector) ok = !!root.querySelector('#' + id);
+    }
+  } catch (x) { ok = false; }
+  PAINT_REF_CACHE.set(id, ok);
+  return ok;
+}
+
 function normColor(c) {
   if (!c) return '';
   let s = String(c).trim().toLowerCase();
   if (s === 'none' || s === 'transparent' || s === 'currentcolor') return '';
+  /* ★F9：**悬空**的 paint 引用按「无填充」处理。
+   * 在 SVG 里 `fill="url(#id)"` 若解析不到对应的渐变/图案，元素根本不会被绘制；
+   * 旧实现对此返回非空字符串，于是 04 的 occlusion 与 06 的 _nudgePlan 会把它
+   * 当成不透明遮挡源，**凭空报出「文字被遮挡」**（实测 normColor('url(#nonexistent)')
+   * 返回 'url(#nonexistent)'）。
+   * 注意方向：**能解析到**的 url(#id) 仍然返回非空 —— 渐变按不透明处理，这是对的。
+   * 设计文档原设想「渐变被当成不遮挡 → 遮挡漏检」与代码事实相反（已用探针核实：
+   * normColor 对 url/命名色都返回非空），故此项只修悬空引用，不引入 stop-opacity 解析。 */
+  if (s.indexOf('url(') === 0) {
+    const m = s.match(/#([^)]+)\)/);
+    if (!m) return '';
+    return paintRefExists(m[1]) ? s.slice(0, 20) : '';
+  }
   if (s[0] === '#') {
     if (s.length === 4) s = '#' + s[1] + s[1] + s[2] + s[2] + s[3] + s[3];
     return s.slice(0, 7);

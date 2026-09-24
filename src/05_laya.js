@@ -306,6 +306,17 @@ const LayaDecide = {
     const safeNo = applied.safe_to_auto_fix && !applied.safe_to_auto_fix.choice;
     const gate = { relayout: !!(applied.should_relayout && applied.should_relayout.choice), safeAll: !safeNo };
 
-    return { plan, qs, applied, raw, stateText, err, gate, meta: raw && raw.meta ? raw.meta : null };
+    /* ★ 本体 + 规则围栏（05b_ontology.js）
+     * 职责：在「分数门」之前再加一道**结构门** —— 分数看不见结构破坏（实测一轮美化
+     * +8.4 分的同时把平台栈极差 211.83 改成 266.1、把箭头错位 21.5/42.01 改成 36/72、
+     * 把两条 1942/1957px 装饰样条压成一条直线）。围栏只**收窄**动作集，绝不新增动作。
+     * 软依赖：本体未加载或构建失败时整体放行（不得因本体报错而阻断修复）。 */
+    let fence = null;
+    if (typeof Ontology !== 'undefined' && Ontology && Ontology.fence) {
+      fence = Ontology.fence(ir, an, applied, gate, o);
+      if (fence && fence.gate) Object.assign(gate, fence.gate);
+    }
+
+    return { plan, qs, applied, raw, stateText, err, gate, fence, meta: raw && raw.meta ? raw.meta : null };
   }
 };

@@ -419,9 +419,11 @@
 <script src="src/01_util.js"></script>
 <script src="src/02_runtime.js"></script>
 <script src="src/03_ir.js"></script>
+<script src="src/03b_region.js"></script>
 <script src="src/04_analyzer.js"></script>
 <script src="src/06_geometry.js"></script>
 <script src="src/05_laya.js"></script>
+<script src="src/05b_ontology.js"></script>
 <script src="src/07_patch.js"></script>
 <script src="src/10_samples.js"></script>
 <script src="src/11_realsvgs.js"></script>
@@ -1100,7 +1102,26 @@ const UI = {
    *      没出现的新 op，宁可让它们照常走原有的守卫/评分门，也不要因为
    *      清单对不上而整体空转。
    * ==================================================================== */
-  opSig(o) { return String(o.strategy || '') + '|' + String(o.label || ''); },
+  opSig(o) {
+    /* ★F10：签名改用**稳定身份**（元素 id + kind + 策略 + 问题类型），不再用 label。
+     * 旧实现 `strategy|label` 有两处相反方向的漏洞：
+     *   ① 冲突（过度合并）：label 相同而元素不同的多个 op 共用一把钥匙 →
+     *      取消其中一个会连带取消其它元素上的改动；
+     *   ② 失配（fail-open 被放大）：label 里带数量/字号等**会随后续重算变化**的描述
+     *      （如「放大 1.37× → 132×54」），预览与应用的 label 一旦不同，
+     *      deny 就匹配不上 → 用户明明取消了，管线却照做。
+     * 换成元素 id 后 ① 的作用域从「全图同策略同 label」收窄到「同一元素」，
+     *   ② 则彻底消除（id 在同一次运行内稳定）。
+     * 残余局限（如实标注）：同一元素上、kind/策略/问题类型都相同的多个 op
+     *   （例如同一次 normalize_style 里对同一文本既改字号又改填充）仍会共用签名。
+     *   彻底解决需要在 claim() 处下发一个显式稳定 opId，属独立改动。
+     * 无元素 id 时退回包含 label —— 宁可对 label 敏感，也不要丢掉区分度。 */
+    if (!o) return '?';
+    const el = (o.target && o.target.nodeType === 1) ? o.target : null;
+    const id = (el && el.id) ? el.id : '';
+    const base = String(o.kind || '') + '|' + String(o.strategy || '') + '|' + String(o.issueType || '');
+    return id ? (id + '|' + base) : (base + '|' + String(o.label || ''));
+  },
 
   opDenySet() {
     const out = [];

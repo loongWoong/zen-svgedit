@@ -1,6 +1,6 @@
 <!-- 由 svgedit/build.py 生成，请勿手改（改动请落到 ui.html / src/*.js 后重新构建）
-     源: ui.html + 14 段脚本（含 vendor/svgcanvas.min.js）
-     构建: 2026-09-24 11:47:34 -->
+     源: ui.html + 16 段脚本（含 vendor/svgcanvas.min.js）
+     构建: 2026-09-24 17:12:15 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1469,11 +1469,28 @@ const IR = {
      *   非背景包含节点（smallest-enclosing），背景板与更大的容器不再抢夺标签。 */
     const cvBox = R.mk(0, 0, canvas.w || 0, canvas.h || 0);
     const cvArea = cvBox.w > 0 && cvBox.h > 0 ? R.area(cvBox) : 0;
+    /* ★F11 根因修复：isBg 必须相对**作者画布**判定，而不是可能已被中途改过的当前画布。
+     * 实测（tests/diag_batch.cjs）：本体图 n3 = rect#svg_5（满版外框）在作者画布 1920×1080 下
+     * 面积比 0.86 → isBg=true；一次**被接受的** spacing|distribute_equal 让 canvasTail 调用
+     * Runtime.setResolution → 画布变成 2036.5×1129 → 同一块 n3 面积比掉到 0.78 → isBg=false
+     * → 满版外框降级成普通节点，把 H1 标题 / 副标题 / 图例**全部认领为自己的 labels**，
+     * 于是 text_overflow 的 move_text 批次从 4 个 op 膨胀成 10 个，生成了把标题整体平移
+     * (697.5, 449.5)px 到画布中心的 opFixAnchor「搬运动作」；标题随即压在文档序更靠后的
+     * 不透明容器下 → 2 条 occlusion → occlusion.density 恰好等于 collSat 0.5 →
+     * metrics.collision 从 96 **直接塌到 0** → 整批 10 op 被门禁全数否决。
+     * 症结是「谁是满版底板」这一**语义**随画布尺寸漂移，而不是那些 op 本身写错。
+     * 因此把判据钉在作者画布上：画布可以被 canvasTail 撑大（既有功能，保留），
+     * 但底板语义不随之改变；二者解耦后重算 IR 才是幂等的。
+     * 若 sopt 没带 authoredCanvas（例如直接调 IR.build 的测试/工具），退回当前画布，
+     * 行为与改动前**逐位一致**。 */
+    const bgBox = (o.authoredCanvas && o.authoredCanvas.w > 0 && o.authoredCanvas.h > 0)
+      ? R.mk(0, 0, o.authoredCanvas.w, o.authoredCanvas.h) : cvBox;
+    const bgArea = R.area(bgBox) > 0 ? R.area(bgBox) : cvArea;
     for (const n of nodes) {
       /* 背景板 = 自身面积覆盖 ≥85% 画布的节点（满版底板 / 大容器），不是「被画布包住」。
        * ★ 注意：用面积比而非 coverRatio(n,cvBox) —— 后者是按 min(面积) 归一，
        *   任何落在画布内的节点都会得到 ≈1.0，会把小色块也误判成背景。 */
-      n.isBg = cvArea > 0 && (R.area(n.geomBox) / cvArea) >= 0.85;
+      n.isBg = bgArea > 0 && (R.area(n.geomBox) / bgArea) >= 0.85;
     }
     for (const ft of freeTexts) {
       const owners = nodes.filter(n =>
@@ -1490,11 +1507,39 @@ const IR = {
     for (const n of nodes) {
       n.textW = n.labels.length ? Math.max(...n.labels.map(l => l.bbox.w)) : 0;
       n.textH = n.labels.length ? R.union(n.labels.map(l => l.bbox)).h : 0;
-      n.importance = (n.labels.map(l => l.text.length).reduce((a, b) => a + b, 0) || 0) + 1;
       n.area = R.area(n.bbox);
     }
     const areas = nodes.map(n => n.area).sort((a, b) => a - b);
     const medArea = areas.length ? areas[Math.floor(areas.length / 2)] : 0;
+
+    /* ---------- 6b. 语义角色（F7）+ 视觉权重 ----------
+     * 为什么需要 role：tiny_element 的旧判据**只看面积**（< 中位面积 × tinyRatio），
+     * 于是图例色块、分隔线、装饰圆点这类**无标签装饰件**也被当成「过小的数据节点」，
+     * 被成批放大 —— 实测本体图 grow_to_min 让 collision 96→16（Δ−80）。
+     * role 把「这个元素是否承载语义」显式化，让 tiny_element 只作用在真正的数据节点上。
+     * 判据全部是确定性几何/属性，按序短路；data-role 方言优先（与 dialect 判定同源）。 */
+    for (const n of nodes) {
+      const dr = n.elem && n.elem.getAttribute ? n.elem.getAttribute('data-role') : null;
+      const hasLabel = n.labels.length > 0;
+      let role;
+      if (dr) role = String(dr).trim();
+      else if (n.isBg) role = 'container';                       /* 满版底板 / 大容器 */
+      else if (hasLabel) role = 'data';                          /* ★ 有标签 = 承载语义（即使过小） */
+      else if (n.area < medArea * 0.35) role = 'decoration';     /* 无标签小件：色块 / 圆点 */
+      else if (n.bbox.w <= 4 || n.bbox.h <= 4) role = 'decoration';  /* 细线 / 发丝件 */
+      else role = 'shape';                                       /* 无标签的承载形状（面板底、分区块） */
+      n.role = role;
+    }
+
+    /* 视觉权重：语义角色 × 面积相对量 × 标签量。全为正、量纲无关。
+     * 旧实现只是「标签字数 + 1」，完全不含「谁是主体」，导致 distribute_weighted
+     * 把面积差一个量级的容器与色块按同一数量级分配间距。下界恒 > 0，避免 wsum 除零。 */
+    const ROLE_W = { container: 1.0, data: 1.6, shape: 0.8, decoration: 0.35 };
+    for (const n of nodes) {
+      const textLen = n.labels.reduce((a, l) => a + l.text.length, 0);
+      const areaW = medArea > 0 ? clamp(Math.sqrt(n.area / medArea), 0.35, 3) : 1;
+      n.importance = r2((ROLE_W[n.role] || 1) * areaW * (1 + textLen * 0.6));
+    }
 
     /* ---------- 7. 边端点 → 源/目标节点 ---------- */
     for (const e of edges) {
@@ -1513,9 +1558,21 @@ const IR = {
     const boxes = nodes.map(n => n.bbox).concat(edges.map(e => R.fromPoints(e.pts)), texts.map(t => t.bbox));
     const contentBox = R.union(boxes) || R.mk(0, 0, canvas.w, canvas.h);
 
+    /* ---------- 8b. 区域图（F5，软依赖）----------
+     * 语义区域在源 SVG 里显式存在（分节 <g> + 前置注释名），但扁平 IR 把它丢掉了，
+     * 于是「中央板块过挤、两侧过空」这类**全局布局**问题无处度量（只能看全画布 canvas）。
+     * 软依赖写法：RegionGraph 未加载、或内部失败返回 null 时 regions = null；
+     * 下游所有区域级维度必须把 null 解释为「不适用 → 满分且不报 issue」，
+     * 绝不能解释为「0 分」，否则每一张没有分组结构的扁平 SVG 都会被凭空扣分。 */
+    let regions = null;
+    if (typeof RegionGraph !== 'undefined' && RegionGraph && RegionGraph.build) {
+      try { regions = RegionGraph.build(rt, content, nodes, canvas, { svgText: o.svgText || null }); }
+      catch (e) { regions = null; notes.push('区域图构建失败：' + (e && e.message ? e.message : String(e))); }
+    }
+
     const ir = {
       ok: true, canvas, nodes, edges, texts, freeTexts: texts, decorations, preserved,
-      dialect, medArea, contentBox, opts: o,
+      dialect, medArea, contentBox, opts: o, regions,
       notes,
       stats: {
         nodes: nodes.length, edges: edges.length, labels: nodes.reduce((a, n) => a + n.labels.length, 0) + texts.length,
@@ -1690,6 +1747,513 @@ const IR = {
 </script>
 <script>
 /* =============================================================================
+ * SVG Beautifier · 03b 区域图 RegionGraph（F5 · 语义区域树）
+ *
+ * 动机：源 SVG 本来就带**显式的语义区域结构** —— 每个 section 是一段
+ *   「XML 注释 + <g>（或直接一串形状）」，例如 onto 样本里的
+ *   `<!-- Center platform container --> <g>…</g>`。
+ * 但 03_ir.js 把整棵树压平成一张节点表，区域信息在压平那一刻就丢了：
+ * 下游只能看到「39 个节点」，看不到「中央面板挤、两侧列空」。
+ * Analyzer.regionMetrics（F6 第一段，只写入 raw、不进总分）一直在等 `ir.regions`，
+ * 缺了这份数据它就恒返回 applicable:false —— 本模块就是它的上游供数方。
+ *
+ * 契约（三条硬约束）：
+ *   ① **只读**：不修改 DOM、不写任何属性。
+ *   ② **绝不抛错**：整个函数体包在 try/catch 里，任何内部异常都返回 null。
+ *      调用方把 null 解释为「区域不可用」，所有区域级度量随即退化为 not applicable
+ *      （与 06_geometry.js 对可选依赖 LayaRule 的软失败口径一致：
+ *        `typeof LayaRule !== 'undefined' && LayaRule.groupByType`）。
+ *   ③ **唯一归属**：每个 IR 节点属于且只属于一个区（最深的那个拥有者），
+ *      byNode 是这条不变量的唯一出口，diag 里做求和断言。
+ *
+ * 七个非显然的设计点（都是实测逼出来的，不是推测）：
+ *   1. **必须先剥包装层**。svgcanvas 载入后 `#svgcontent` 的元素子节点只有
+ *      `title/desc/defs` + 一个包装 `<g class="layer">`（所有内容都在里面）。
+ *      不剥的话整个图会被认成「一个区」。
+ *   2. **ink 只累加叶子成员**。嵌套容器（外框包内框）会把同一块面积算两次，
+ *      实测 inkDensity 会冲到 2.66 这种无意义值；去掉「含住别人的成员」后才 ≤1。
+ *   3. **满版底板用面积比而不是 coverRatio**（同 03_ir.js:149-152 的 isBg）：
+ *      coverRatio 按 min(面积) 归一，画布内任何元素都会 ≈1.0，会把小色块也判成底板。
+ *   4. **区元素没有 IR 节点成员时，bbox 回退到元素自身的世界包围盒**。
+ *      纯装饰的命名区（如 Legend：4 个 16×16 色块太小、够不上节点门槛）
+ *      否则没有几何，连 band/card 都判不出来。
+ *   5. **根级直属的 IR 节点各自成一区**（源图的 section 注释正是逐个元素前导的），
+ *      而**组内**节点归属于所在组：否则 onto 的 7 张卡片会被拆成 7 个区，
+ *      得不出「左侧列 7 件」这种列级度量。
+ *   6. **保留条件补一条「自身有可见内容」**。规格里「0~1 成员的命名区也保留」
+ *      原本靠注释名兜底；产品 DOM 下名字恒为空（见下面 ★），若不放宽，
+ *      图例带（整组都够不上节点门槛 → 0 成员）与「只有连线的语义带」会整块消失。
+ *   7. **区名最终来自 `opts.svgText`（作者原文），且绝不猜**。图层化打断了注释与
+ *      元素的兄弟关系，但 `svgText` 是未经改动的原文，交错关系完好。命名三级降级：
+ *      ① 活 DOM 紧邻前导兄弟串（现场注释在原位时直接命中）；
+ *      ② **id 命中**：源图元素的 id 是跨 DOM 重建的稳定身份，且 svgcanvas 只给
+ *         没 id 的元素补 `svg_N`（作者写的 id 一律保留），所以 `region.dom` 的 id
+ *         能对上；
+ *      ③ **同类序数兜底**：源图里**没有 id** 的顶层元素 ↔ 仍无名的顶层区，
+ *         按**标签同类**分组、两组各自按文档序配对，**只在数量完全相等时**才用。
+ *      三种途径都只取「紧前兄弟（跳过纯空白文本）就是注释」的名字 —— 绝不把上一条
+ *      注释顺延给后面的元素（那会把 `rect#svg_5` 外框错叫成 Background）。
+ *      拿不到 / 解析失败（parsererror）/ 数量不等 → 一律保持空名：
+ *      错名会污染 regionMetrics.hierarchy，比空名更糟。
+ *
+ * ★ 已知环境事实（会在 diag.notes 里报出来，不是本模块的 bug）：
+ *   svgedit 的 Drawing.identifyLayers() 会把「根级元素」整体搬进新建的
+ *   `g.layer`（该组追加在最后），而**根级注释留在原地**，于是源图里
+ *   「注释紧邻其 section」的兄弟关系在运行时 DOM 里被抬断了一层。
+ *   onto 样本实测：16 条注释仍在，但 13 条被抬到了 wrapper 之外，
+ *   9 个区元素的 previousSibling 串里一条注释都没有 → 仅靠活 DOM 的 name 全为 ''。
+ *   因此调用方要把**作者原文**经 `opts.svgText` 传进来（见设计点 7）：
+ *   原文的交错关系是完好的，命名由它补齐。仍拿不到就保持空名 ——
+ *   诚实降级，绝不给错名（错名会污染 hierarchy 度量与报告）。
+ * ===========================================================================*/
+'use strict';
+
+const RegionGraph = {
+  /* 判定阈值（全部可被 opts 覆盖） */
+  DEF: {
+    minMembers: 2,        /* 成为区的最少成员数；有名字的区放宽到 0（Legend/Footer 这类语义带） */
+    containRatio: 0.95,   /* 包含判定：coverRatio ≥ 该值即视为「含住」（同 Analyzer.collision 口径） */
+    frameRatio: 0.85,     /* 满版底板：自身面积 / 画布面积 ≥ 该值 */
+    bandAspect: 6,        /* 长条带：宽高比 ≥ 该值 */
+    bandMaxH: 0.12,       /* 长条带：高度 ≤ 画布高的该比例 */
+    decorRatio: 0.0005,   /* 装饰性小区：面积 / 画布面积 < 该值且叶子全无标签 */
+    aspectLo: 0.4,        /* 面板/卡片：宽高比带宽 */
+    aspectHi: 4,
+    maxSiblingScan: 64    /* 前导兄弟串最多回看多少个节点（防御恶意深链） */
+  },
+
+  /* 与 03_ir.js 的 SKIP_INSIDE 同口径：这些标签内部的元素不算内容 */
+  SKIP: ['defs', 'marker', 'clippath', 'mask', 'pattern', 'symbol', 'filter',
+         'lineargradient', 'radialgradient', 'title', 'desc', 'metadata', 'style', 'script'],
+
+  /* 源图命名的单条缓存：{ text, data }（同一份作者原文不必每次重建都重解析） */
+  _srcCache: { text: null, data: null },
+
+  /* 软依赖：03_ir.js 已加载时复用它的 skip 表，避免两处口径漂移 */
+  skipList() {
+    return (typeof IR !== 'undefined' && IR && IR.SKIP_INSIDE && IR.SKIP_INSIDE.length)
+      ? IR.SKIP_INSIDE : this.SKIP;
+  },
+
+  /* ============================ 主入口 ============================ */
+  /* build(rt, content, nodes, canvas, opts) → { regions, byNode, tree, notes, diag } | null */
+  build(rt, content, nodes, canvas, opts) {
+    try {
+      return this._build(rt, content, nodes, canvas, opts || {});
+    } catch (e) {
+      /* 软失败：调用方一律按「区域不可用」处理，绝不因为一个可选层炸掉主流程 */
+      return null;
+    }
+  },
+
+  _build(rt, content, nodes, canvas, opts) {
+    /* 入参体检：拿不到真 DOM 就没有区域可言（调用方按 not applicable 处理） */
+    if (!rt || !content || !content.querySelectorAll || !nodes || !nodes.length) return null;
+    if (content.nodeType !== 1) return null;
+    const o = Object.assign({}, this.DEF, opts);
+    const skip = this.skipList();
+
+    const cv = {
+      w: (canvas && canvas.w) || parseFloat(rt.canvas && rt.canvas.contentW) || 0,
+      h: (canvas && canvas.h) || parseFloat(rt.canvas && rt.canvas.contentH) || 0
+    };
+
+    /* ---------- 1. 剥掉包装层 ----------
+     * svgcanvas 把全部内容塞进一个包装 <g>；#svgcontent 自身还挂着
+     * title/desc/defs。只要「过滤后只剩一个元素子节点且它是 <g>」就继续下钻。 */
+    let rootEl = content;
+    for (let guard = 0; guard < 32; guard++) {
+      const kids = this.kids(rootEl, skip);
+      if (kids.length === 1 && tagOf(kids[0]) === 'g') { rootEl = kids[0]; continue; }
+      break;
+    }
+
+    /* ---------- 元素 → IR 节点 反查 ----------
+     * 组的 IR 节点 elem 是那个 <g>、shapeElem 是组里的形状；两者都登记，
+     * 这样无论先遇到谁都能命中同一个节点（成员不会因遍历路径不同而丢失）。 */
+    const nodeByEl = new Map();
+    const shapeEls = new Set();
+    for (const n of nodes) {
+      if (!n) continue;
+      if (n.elem && n.elem.nodeType === 1) nodeByEl.set(n.elem, n);
+      if (n.shapeElem && n.shapeElem.nodeType === 1) { nodeByEl.set(n.shapeElem, n); shapeEls.add(n.shapeElem); }
+    }
+    const nById = new Map(nodes.filter(Boolean).map(n => [n.id, n]));
+
+    /* ---------- 2. 递归建树（叶子级唯一归属） ----------
+     * `<g>`：成员 ≥ minMembers 或**有注释名** → 成一个子区（Legend/Footer 这类
+     *        0~1 成员的语义带也要留）；否则折叠 —— 成员上提给父级。
+     * 非 <g>：命中 IR 节点才进成员表；文字/连线/装饰不进成员表（由包含关系计数）。
+     * ★ 根级（depth 0）直属的 IR 节点各自成「一节」：源图的 section 注释正是
+     *   逐个元素前导的，所以根级一个形状本身就是语义区（onto 样本的
+     *   Background / 外框 两块就是两个区）；而**组内**的形状归属于组这一区，
+     *   不再细分（否则 7 个卡片会被拆成 7 个区，得不出「左侧列 7 件」这种度量）。 */
+    const consumed = new Set();   /* 已被吃掉的注释：一个名字只归一个区 */
+    /* 折叠后上提的单成员小节：区元素取**被折叠的那个组**（源图的注释正是打在这个
+     * 组上的），而不是组里那个形状 —— 否则区表里会出现「rect#svg_103」这种
+     * 与源图 section 对不上的身份。命名同样先试活 DOM 的紧邻注释。 */
+    const singleton = (n, domEl, depth) => ({
+      el: (domEl && domEl.nodeType === 1) ? domEl : n.elem,
+      depth, sub: [], own: [n],
+      name: (domEl && domEl.nodeType === 1) ? this.commentName(domEl, consumed, o) : '',
+      mem: [n]
+    });
+    const rollUp = nd => {
+      nd.mem = nd.own.slice();
+      for (const s of nd.sub) nd.mem.push.apply(nd.mem, s.mem);
+      return nd;
+    };
+    const walk = (el, depth) => {
+      const nd = { el, depth, sub: [], own: [], name: '', mem: [] };
+      for (const c of this.kids(el, skip)) {
+        if (tagOf(c) === 'g') {
+          const k = rollUp(walk(c, depth + 1));
+          k.name = this.commentName(c, consumed, o);
+          /* 保留条件：成员 ≥ minMembers，或有注释名，或**自身就有可见内容**。
+           * 第三条是产品 DOM 下的必要放宽：规格里「0~1 成员的命名区也保留」
+           * 原本靠注释名兜底，但 svgedit 的图层重建会把根级注释抬到 wrapper 之外
+           * （见文件头 ★），名字恒为空 —— 若不放宽，图例带（4 个 16×16 色块，
+           * 整组都够不上节点门槛 → 0 成员）会整块消失，
+           * 「只有连线/装饰的语义带」同理。空壳 <g> 仍然折叠。 */
+          if (k.mem.length >= o.minMembers || k.name || (k.mem.length === 0 && this.hasOwnContent(c))) {
+            nd.sub.push(k);
+          } else if (depth === 0) {
+            /* 根级折叠：成员各自成节，保持「根级节点 = 一节」的口径 */
+            for (const m of k.mem) nd.sub.push(singleton(m, c, depth + 1));
+          } else {
+            nd.own.push.apply(nd.own, k.mem);   /* 组内折叠：成员上提 */
+          }
+        } else {
+          const n = nodeByEl.get(c);
+          if (!n) continue;
+          if (depth === 0) nd.sub.push(singleton(n, c, depth + 1));
+          else nd.own.push(n);
+        }
+      }
+      return nd;
+    };
+    const rootNd = rollUp(walk(rootEl, 0));
+
+    /* ---------- 3. 物化成公开的区对象 ---------- */
+    const regions = [], byNode = Object.create(null);
+    let seq = 0;
+    const materialize = (nd, parent) => {
+      const r = {
+        id: 'r' + (++seq),
+        dom: nd.el || null,
+        depth: nd.depth,
+        parent: parent ? parent.id : null,
+        name: nd.name || '',
+        kind: 'cluster',
+        bbox: null,
+        members: (nd.mem || []).map(n => n.id),
+        texts: 0,
+        decorations: 0,
+        inkArea: 0,
+        inkDensity: 0,
+        whitespace: 1,
+        children: [],
+        leafCount: 0
+      };
+      for (const n of (nd.mem || [])) byNode[n.id] = r.id;
+      if (parent) regions.push(r);          /* 树根单独由 tree 暴露，不进 regions */
+      for (const s of nd.sub) r.children.push(materialize(s, r).id);
+      return r;
+    };
+    const tree = materialize(rootNd, null);
+
+    /* ---------- 3b. 兜底：漏掉的节点归给最深的包含区 ---------- */
+    const orphans = nodes.filter(n => n && n.id && !byNode[n.id]);
+    for (const n of orphans) {
+      let host = null;
+      for (const r of regions) {
+        if (!r.dom || !r.dom.contains || !n.elem) continue;
+        let inside = false;
+        try { inside = r.dom.contains(n.elem); } catch (e) { inside = false; }
+        if (!inside) continue;
+        if (!host || r.depth > host.depth) host = r;
+      }
+      if (host) { host.members.push(n.id); byNode[n.id] = host.id; }
+      else { tree.members.push(n.id); byNode[n.id] = tree.id; }   /* 兜底到树根 */
+    }
+
+    /* ---------- 4/5/6. 几何 + 类型 + 计数 ---------- */
+    /* 一个节点都没接上 = 传进来的节点表和这棵 DOM 无关（不是「区域稀疏」），
+     * 按软失败返回 null，省得下游拿一张空区表去算密度。 */
+    if (!Object.keys(byNode).length) return null;
+    for (const r of regions) this._measure(rt, r, nById, shapeEls, cv, o);
+    this._measure(rt, tree, nById, shapeEls, cv, o);
+
+    /* ---------- 7. 命名：活 DOM（第 2 步已试）→ 源图 id → 源图同类序数 ---------- */
+    const srcMode = this.sourceMode(o.svgText);
+    const fromSrc = this.applySourceNames(regions, tree, o.svgText);
+
+    /* ---------- 诊断（断言不抛错，只回报） ---------- */
+    const sum = regions.reduce((s, r) => s + r.members.length, 0);
+    const ownedIds = Object.keys(byNode);
+    const comments = this.countComments(content);
+    const named = regions.filter(r => r.name).length;
+    const notes = [];
+    if (sum !== ownedIds.length)
+      notes.push(`区成员总和 ${sum} ≠ 已归属节点数 ${ownedIds.length}（唯一归属不变量被破坏）`);
+    if (ownedIds.length !== nodes.length)
+      notes.push(`已归属节点 ${ownedIds.length} ≠ IR 节点 ${nodes.length}`);
+    const over = regions.filter(r => r.inkDensity > 1);
+    if (over.length)
+      notes.push(`inkDensity > 1 的区：${over.map(r => r.id + '=' + r.inkDensity).join(', ')}（叶子去重失效）`);
+    if (comments > 0 && named < regions.length) {
+      if (srcMode === 'ok') {
+        notes.push(`区名：活 DOM 紧邻注释命中 ${named - fromSrc.total} 个，`
+          + `源图补齐 ${fromSrc.total} 个（id ${fromSrc.id} / 同类序数 ${fromSrc.ordinal}），`
+          + `仍无名 ${regions.length - named} 个 —— 多义处一律留空，不猜`);
+      } else if (srcMode === 'invalid') {
+        notes.push(`opts.svgText 无法解析（parsererror）→ 退回活 DOM 命名：`
+          + `DOM 内有 ${comments} 条注释但都已被图层重建抬走，故 name 为空`);
+      } else {
+        notes.push(`DOM 内有 ${comments} 条 XML 注释，但都已被 svgedit 的图层重建抬到 wrapper 之外`
+          + `（区元素的紧邻前导兄弟串里没有注释）→ name 为空；`
+          + `调用方传入作者原文（opts.svgText）即可补齐`);
+      }
+    }
+
+    return {
+      regions, byNode, tree, notes,
+      diag: {
+        regions: regions.length, named, comments,
+        sourceNames: fromSrc.total, sourceNameMode: srcMode,
+        ownedNodes: ownedIds.length, totalNodes: nodes.length,
+        sumMembers: sum, rootTag: tagOf(rootEl), rootId: (rootEl && rootEl.id) || '',
+        unwrapped: rootEl !== content, invariant: sum === ownedIds.length && ownedIds.length === nodes.length
+      }
+    };
+  },
+
+  /* --------------------------- 小工具 --------------------------- */
+  kids(el, skip) {
+    const out = [];
+    if (!el || !el.children) return out;
+    for (const c of el.children) if (skip.indexOf(tagOf(c)) < 0) out.push(c);
+    return out;
+  },
+
+  /* 语义命名：沿 previousSibling 链找「紧邻前导兄弟串」里的 XML 注释。
+   * · 空白文本节点、元素兄弟都跳过（一个注释可能前导一整节多个元素）；
+   * · 停在父边界（不越出去找祖辈的兄弟）——「不吞比紧邻串更远的那条注释」；
+   * · 已被别的区吃掉的注释不再复用（一个名字只归一个区）。 */
+  commentName(el, consumed, o) {
+    let s = el && el.previousSibling, steps = 0;
+    while (s && steps++ < o.maxSiblingScan) {
+      if (s.nodeType === 8) {
+        if (consumed.has(s)) { s = s.previousSibling; continue; }
+        consumed.add(s);
+        return String(s.nodeValue == null ? '' : s.nodeValue).replace(/\s+/g, ' ').trim();
+      }
+      if (s.nodeType === 3 && String(s.nodeValue || '').trim() !== '') return '';  /* 非空白文本：串断 */
+      s = s.previousSibling;
+    }
+    return '';
+  },
+
+  /* ================= 源图命名（opts.svgText 路径） =================
+   * 现场 DOM 的注释已被图层重建抬走（见文件头 ★），但作者原文里的
+   * 「注释紧邻其 section」是完好的。这里只做**严格相邻**的读取：
+   * 元素的名字 = 它的前一个「非纯空白」兄弟节点，且该节点必须是注释。 */
+
+  /* 源图元素名的唯一读法：向前跳过纯空白文本节点，第一个节点必须是注释。
+   * 不越过元素兄弟、不越过非空白文本、不跨父边界 —— 绝不把上一条注释顺延下来。 */
+  adjacentName(el) {
+    let s = el && el.previousSibling, steps = 0;
+    while (s && s.nodeType === 3 && String(s.nodeValue || '').trim() === ''
+           && steps++ < this.DEF.maxSiblingScan) s = s.previousSibling;
+    if (!s || s.nodeType !== 8) return '';
+    return String(s.nodeValue == null ? '' : s.nodeValue).replace(/\s+/g, ' ').trim();
+  },
+
+  /* 解析作者原文，抽出两张表（单条缓存：同一份文本每次重建都重解析没必要）：
+   *   idNames: 源图**带 id** 的元素 → 紧邻注释名（id 是跨 DOM 重建的稳定身份）
+   *   byTag  : 源图**顶层、无 id** 的元素 → 按标签分组的紧邻注释名序列表
+   *            （带着 id 的走 idNames，不参与序数配对，避免错位） */
+  srcNames(svgText) {
+    if (typeof svgText !== 'string' || !svgText.trim()) return null;
+    if (this._srcCache && this._srcCache.text === svgText) return this._srcCache.data;
+    const skip = this.skipList();
+    let data = null;
+    try {
+      const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+      const root = doc && doc.documentElement;
+      if (root && tagOf(root) === 'svg' && !(doc.querySelector && doc.querySelector('parsererror'))) {
+        const idNames = new Map(), byTag = new Map();
+        const walk = el => {
+          for (const c of el.children) {
+            if (skip.indexOf(tagOf(c)) >= 0) continue;
+            const id = c.getAttribute && c.getAttribute('id');
+            const nm = this.adjacentName(c);
+            if (id && nm) idNames.set(id, nm);
+            walk(c);
+          }
+        };
+        walk(root);
+        for (const c of root.children) {
+          if (skip.indexOf(tagOf(c)) >= 0) continue;
+          if (c.getAttribute && c.getAttribute('id')) continue;
+          const t = tagOf(c);
+          if (!byTag.has(t)) byTag.set(t, []);
+          byTag.get(t).push(this.adjacentName(c));
+        }
+        data = { idNames, byTag };
+      }
+    } catch (e) { data = null; }
+    this._srcCache = { text: svgText, data };
+    return data;
+  },
+
+  /* 源图命名的两种口径，供 diag 区分「没给原文」和「原文坏了」 */
+  sourceMode(svgText) {
+    if (typeof svgText !== 'string' || !svgText.trim()) return 'missing';
+    return this.srcNames(svgText) ? 'ok' : 'invalid';
+  },
+
+  /* DOM 文档序比较（序数配对必须显式排序，不能靠 regions 的生成顺序） */
+  docOrder(a, b) {
+    if (a === b) return 0;
+    try {
+      const p = a.compareDocumentPosition(b);
+      if (p & 4) return -1;    /* b 在 a 之后 */
+      if (p & 2) return 1;
+    } catch (e) { /* 忽略：退回稳定序 */ }
+    return 0;
+  },
+
+  /* 给仍无名的区补名（活 DOM 已在建树时试过一轮）：
+   *   ① id 命中：源图带 id 的元素名 → 同 id 的区元素；id 唯一，跨层级也安全。
+   *   ② 同类序数：顶层、仍无名的区按标签分组，与源图**顶层、无 id** 的同标签元素
+   *      按文档序配对；**只在两组数量完全相等时**才用（数量不等一律留空，绝不猜）。
+   * 名字可能为空串（源图那个元素前面没有紧邻注释）—— 保持该区空名。 */
+  applySourceNames(regions, tree, svgText) {
+    const out = { id: 0, ordinal: 0, total: 0 };
+    const src = this.srcNames(svgText);
+    if (!src) return out;
+    for (const r of regions) {
+      if (r.name || !r.dom || !r.dom.getAttribute) continue;
+      const id = r.dom.getAttribute('data-id') || r.dom.id || '';
+      if (id && src.idNames.has(id)) { r.name = src.idNames.get(id); out.id++; }
+    }
+    const rootId = tree && tree.id;
+    const buckets = new Map();
+    for (const r of regions) {
+      if (r.name || r.parent !== rootId) continue;    /* 只配顶层区 */
+      const t = tagOf(r.dom);
+      if (!t) continue;
+      if (!buckets.has(t)) buckets.set(t, []);
+      buckets.get(t).push(r);
+    }
+    for (const [t, list] of buckets) {
+      const srcList = src.byTag.get(t);
+      if (!srcList || srcList.length !== list.length) continue;   /* 数量不等 → 放弃该标签 */
+      list.sort((a, b) => this.docOrder(a.dom, b.dom));
+      for (let i = 0; i < list.length; i++) {
+        if (srcList[i] && !list[i].name) { list[i].name = srcList[i]; out.ordinal++; }
+      }
+    }
+    out.total = out.id + out.ordinal;
+    return out;
+  },
+
+  /* 组自身是否有可见内容（形状 / 连线 / 文字）。
+   * 用途：0 成员但内容全在节点门槛之下的语义带（图例色块、纯连线带）不该被折叠掉。 */
+  hasOwnContent(el) {
+    if (!el || !el.querySelectorAll) return false;
+    try { return el.querySelectorAll('rect,circle,ellipse,polygon,path,line,polyline,text').length > 0; }
+    catch (e) { return false; }
+  },
+
+  /* 统计子树里的 XML 注释条数（只看元素内容，不进入 skip 表内部） */
+  countComments(el) {
+    let n = 0;
+    if (!el || !el.querySelectorAll) return 0;
+    try {
+      const it = document.createTreeWalker(el, 128 /* SHOW_COMMENT */);
+      while (it.nextNode()) n++;
+    } catch (e) { return n; }
+    return n;
+  },
+
+  /* 区的文本量：子树内 <text> 元素数（节点标签文字也是 <text>，一并计入）。 */
+  countTexts(el) {
+    if (!el || !el.querySelectorAll) return 0;
+    try { return el.querySelectorAll('text').length; } catch (e) { return 0; }
+  },
+
+  /* 区内的「装饰件」：够不上节点门槛、也不是连线的形状（如图例色块、小圆点）。 */
+  countDecorations(el, shapeEls) {
+    if (!el || !el.querySelectorAll) return 0;
+    let n = 0;
+    try {
+      for (const s of el.querySelectorAll('rect,circle,ellipse,polygon')) if (!shapeEls.has(s)) n++;
+    } catch (e) { /* 忽略 */ }
+    return n;
+  },
+
+  /* 元素自身的世界包围盒（0 成员命名区的几何兜底） */
+  elBox(rt, el) {
+    if (!rt || !el || !rt.worldBBox) return null;
+    let b = null;
+    try { b = rt.worldBBox(el, { stroke: true }); } catch (e) { return null; }
+    if (!b || !isFinite(b.x) || !isFinite(b.w) || !(b.w > 0 || b.h > 0)) return null;
+    return R.mk(b.x, b.y, b.w, b.h);
+  },
+
+  /* -------------------- 几何 + 墨密度 + 类型 -------------------- */
+  _measure(rt, r, nById, shapeEls, cv, o) {
+    const mem = (r.members || []).map(id => nById.get(id)).filter(Boolean);
+    r.bbox = R.union(mem.map(m => m.bbox)) || this.elBox(rt, r.dom);
+
+    /* 叶子 = 不含住其它成员的成员（coverRatio ≥ 0.95 视为包含，同 Analyzer.collision）。
+     * ★ 没有这一步，嵌套容器（外框 + 内框）会把同一块面积重复计入，
+     *   inkDensity 会 >1（实测 2.66）。 */
+    const contains = (a, b) => a !== b
+      && R.area(a.bbox) > R.area(b.bbox)
+      && R.coverRatio(a.bbox, b.bbox) >= o.containRatio;
+    const leaves = mem.filter(m => !mem.some(k => contains(m, k)));
+    r.leafCount = leaves.length;
+
+    r.inkArea = r2(leaves.reduce((s, m) => s + R.area(m.bbox), 0));
+    const area = r.bbox ? R.area(r.bbox) : 0;
+    r.inkDensity = r2(r.inkArea / Math.max(1, area));
+    r.whitespace = r2(1 - Math.min(1, r.inkDensity));
+    r.texts = this.countTexts(r.dom);
+    r.decorations = this.countDecorations(r.dom, shapeEls);
+    r.kind = this._kind(r, leaves, cv, o);
+  },
+
+  /* 类型判定：按顺序首个命中者胜（纯几何、确定性） */
+  _kind(r, leaves, cv, o) {
+    const box = r.bbox || R.mk(0, 0, 0, 0);
+    const cvA = cv.w * cv.h, cvH = cv.h;
+    const a = R.area(box);
+
+    /* ① 满版底板：面积比口径（同 03_ir.js 的 isBg）。
+     *    刻意不用 coverRatio：它按 min(面积) 归一，画布内任何元素都 ≈1.0。 */
+    if (cvA > 0 && a / cvA >= o.frameRatio) return 'frame';
+    /* ② 长条带：很宽很薄（除零保护：h ≤ 0 直接不成立） */
+    if (box.h > 0 && box.w > 0
+        && box.w / box.h >= o.bandAspect && box.h <= o.bandMaxH * cvH) return 'band';
+    /* ③ 装饰性小区：叶子全无标签且面积占比极小（0 成员时 every 恒真，同样成立） */
+    const labelless = leaves.every(m => !(m.labels && m.labels.length));
+    if (cvA > 0 && labelless && a < o.decorRatio * cvA) return 'decoration';
+    /* ④ 面板 / ⑤ 卡片：同一宽高比带宽，成员要求不同 */
+    const asp = box.h > 0 ? box.w / box.h : 0;
+    if (asp >= o.aspectLo && asp <= o.aspectHi) {
+      if (leaves.length >= 2 || (leaves.length >= 1 && (r.texts || 0) >= 2)) return 'panel';
+      return 'card';
+    }
+    return 'cluster';
+  }
+};
+
+</script>
+<script>
+/* =============================================================================
  * SVG Beautifier · 04 几何诊断器 + 质量评分
  *
  * 设计文档 §14：SVGQualityScore =
@@ -1743,6 +2307,7 @@ const Analyzer = {
     raw.edgeRouting = this.edgeRouting(ir, o);
     raw.style = this.style(ir, o);
     raw.canvas = this.canvas(ir, o);
+    raw.region = this.regionMetrics(ir, o);
 
     const metrics = {
       collision: this.sc(raw.collision.density + raw.occlusion.density, o.collSat),
@@ -1762,6 +2327,89 @@ const Analyzer = {
     for (const it of issues) counts[it.type] = (counts[it.type] || 0) + 1;
 
     return { ok: true, metrics, score, raw, issues, counts, weights: this.WEIGHTS, opts: o };
+  },
+
+  /* ==================== 区域级度量（F6 · 第一段：可观不可修） ====================
+   * 动机：评分里唯一的"布局"维度是全画布 canvas（边距/溢出/利用率），没有任何
+   * 区域级的密度、留白、视觉层级。于是「中央板块过挤、两侧过空」这类**全局布局**
+   * 问题在评分里不可表达，门也就无从拦截 —— 这正是"局部规则正确、全局布局恶化"
+   * 的机制性原因（不是观感问题）。
+   *
+   * ★ 第一段只写入 raw，**不进 METRIC_KEYS / WEIGHTS / score**。
+   * 理由：现有维度已经在幻灯片域误报（实测 6 张真实图 style / spacing 恒为 0），
+   * 在观测到新维度在全部样例上的分布之前就给它权重，等于把误报直接写进总分。
+   * 流程：先用既有 sweep 收集分布 → 定标 sat → 再提升为"可修"（第二段）。
+   *
+   * ★ 不适用（applicable=false）必须解释为"满分且不报 issue"，**不能**解释为 0 分：
+   * 否则每一张没有分组结构的扁平 SVG 都会被凭空扣分。
+   *
+   * 口径说明：视觉权重用「区域面积占比 × 平均字号」而**不含对比度** ——
+   * contrastRatio 在 06_geometry.js（本文件之后加载），第一段刻意不引入该耦合；
+   * 提升为第二段时再补，届时可一并纳入 sweep 定标。 */
+  regionMetrics(ir, o) {
+    const na = { applicable: false, n: 0, balance: 1, whitespace: 0, hierarchy: 0 };
+    const rg = ir && ir.regions;
+    if (!rg || !rg.regions || !rg.regions.length) return na;
+    const panels = rg.regions.filter(r => r.kind === 'panel' || r.kind === 'card');
+    if (panels.length < 2) return Object.assign({}, na, { n: panels.length });
+
+    const cvA = Math.max(1, (ir.canvas.w || 0) * (ir.canvas.h || 0));
+    const nById = new Map((ir.nodes || []).map(n => [n.id, n]));
+    const membersOf = r => (r.members || []).map(id => nById.get(id)).filter(Boolean);
+    const labeledOf = r => membersOf(r).filter(n => n.labels && n.labels.length).length;
+    const avgFontOf = r => {
+      let s = 0, c = 0;
+      for (const n of membersOf(r)) for (const l of (n.labels || [])) { s += (l.fontSize || 0); c++; }
+      return c ? Math.max(1, s / c) : 1;
+    };
+
+    /* ① 区域均衡：面板墨密度的极差（按最大值归一，故 d ∈ [0,1)） */
+    const dens = panels.map(r => (typeof r.inkDensity === 'number' ? r.inkDensity : 0));
+    const mx = Math.max.apply(null, dens), mn = Math.min.apply(null, dens);
+    const balance = mx > 0 ? (mx - mn) / mx : 0;
+    const worst = panels[dens.indexOf(mx)] || null, best = panels[dens.indexOf(mn)] || null;
+
+    /* ② 留白：只统计「本应承载内容」的面板（≥2 个成员且 ≥1 个带标签成员）。
+     * ★ 只有"过挤"方向计入 d；"过空"方向单独记入 looseItems 仅作报警 ——
+     *   大片留白可能是有意设计，而且几何引擎**无法生成内容去填满留白**
+     *   （那是语义生成，超出能力）；强行做只会把文字挪来挪去。 */
+    const elig = panels.filter(r => (r.members || []).length >= 2 && labeledOf(r) >= 1);
+    let tightSum = 0;
+    const looseItems = [], tightItems = [];
+    for (const r of elig) {
+      const w = (typeof r.whitespace === 'number') ? r.whitespace : 0;
+      const tight = clamp((0.22 - w) / 0.22, 0, 1);
+      const loose = clamp((w - 0.62) / 0.38, 0, 1);
+      tightSum += tight;
+      if (tight > 0) tightItems.push({ id: r.id, name: r.name || '', whitespace: r2(w), pen: r2(tight) });
+      if (loose > 0) looseItems.push({ id: r.id, name: r.name || '', whitespace: r2(w), pen: r2(loose) });
+    }
+    const whitespace = elig.length ? tightSum / elig.length : 0;
+
+    /* ③ 视觉层级：语义重要性秩 与 视觉权重秩 的不一致率（逆序对比例） */
+    const visOf = r => (R.area(r.bbox) / cvA) * (avgFontOf(r) / 16);
+    const semOf = r => (r.name ? 1 : 0) + ((r.members || []).length >= 2 ? 1 : 0) + (labeledOf(r) >= 1 ? 1 : 0);
+    let disc = 0, pairs = 0;
+    for (let i = 0; i < panels.length; i++) {
+      for (let j = i + 1; j < panels.length; j++) {
+        const ds = semOf(panels[i]) - semOf(panels[j]);
+        const dv = visOf(panels[i]) - visOf(panels[j]);
+        if (ds === 0 || dv === 0) continue;      /* 并列不计入，避免把平局算成不一致 */
+        pairs++;
+        if ((ds > 0) !== (dv > 0)) disc++;
+      }
+    }
+
+    return {
+      applicable: true, n: panels.length,
+      balance: r2(balance), whitespace: r2(whitespace), hierarchy: pairs ? r2(disc / pairs) : 0,
+      worstRegion: worst ? { id: worst.id, name: worst.name || '', inkDensity: r2(dens[dens.indexOf(mx)]) } : null,
+      bestRegion: best ? { id: best.id, name: best.name || '', inkDensity: r2(mn) } : null,
+      tiePairs: pairs, looseItems, tightItems,
+      regions: panels.map(r => ({ id: r.id, kind: r.kind, name: r.name || '',
+                                   inkDensity: r2(r.inkDensity || 0), whitespace: r2(r.whitespace || 0),
+                                   members: (r.members || []).length }))
+    };
   },
 
   /* ========================== 1. 节点碰撞 ========================== */
@@ -2106,8 +2754,16 @@ const Analyzer = {
         { margins: raw.canvas.margins, utilization: raw.canvas.utilization, overflow: raw.canvas.overflow },
         ['rebalance_canvas', 'keep_canvas']);
     }
-    /* tiny_element：有标签但远小于中位面积的节点（标签必然不可读） */
-    const tiny = ir.nodes.filter(n => n.area < ir.medArea * (ir.opts.tinyRatio || 0.35) && n.labels.length > 0);
+    /* tiny_element：有标签但远小于中位面积的节点（标签必然不可读）
+     * ★F7 防御性收窄：容器/装饰件不进此类。**请注意这不是本体图那 8 条的成因** ——
+     * 实测那 8 条全部是真实的有标签数据节点（Validator / Repository / 数据语义化 …），
+     * 该样本 decoration 数为 **0**，所以这条过滤在它上面是 no-op。
+     * 它防的是另一类图：带标签的图例色块、带 `data-role="decoration"` 的方言标注件。
+     * 本体图 tiny_element 成批放大导致 collision 96→16 的问题由 **F1 的 item 级增量提交**
+     * 解决（每个 tiny 节点本就是独立 item，按 item 提交后只有不撞的那些会生效）。 */
+    const tinyEligible = n => n.role === 'data' || n.role === undefined;
+    const tiny = ir.nodes.filter(n => n.area < ir.medArea * (ir.opts.tinyRatio || 0.35)
+      && n.labels.length > 0 && tinyEligible(n));
     for (const n of tiny) {
       add('tiny_element', [n.id], 'low',
         { area: r2(n.area), medArea: r2(ir.medArea), ratio: r2(n.area / Math.max(1, ir.medArea)), desc: n.describe },
@@ -2140,10 +2796,41 @@ const Analyzer = {
   }
 };
 
+/* paint 引用解析缓存：normColor 在 occlusion 的 O(文字 × 节点) 循环里被反复调用，
+ * 每个 url(#id) 都去查 DOM 会明显变慢，故按引用串缓存解析结果。 */
+const PAINT_REF_CACHE = new Map();
+
+function paintRefExists(id) {
+  if (PAINT_REF_CACHE.has(id)) return PAINT_REF_CACHE.get(id);
+  let ok = false;
+  try {
+    const root = (typeof Runtime !== 'undefined' && Runtime.root) ? Runtime.root() : null;
+    if (root) {
+      ok = !!(root.getElementById ? root.getElementById(id) : null);
+      if (!ok && root.querySelector) ok = !!root.querySelector('#' + id);
+    }
+  } catch (x) { ok = false; }
+  PAINT_REF_CACHE.set(id, ok);
+  return ok;
+}
+
 function normColor(c) {
   if (!c) return '';
   let s = String(c).trim().toLowerCase();
   if (s === 'none' || s === 'transparent' || s === 'currentcolor') return '';
+  /* ★F9：**悬空**的 paint 引用按「无填充」处理。
+   * 在 SVG 里 `fill="url(#id)"` 若解析不到对应的渐变/图案，元素根本不会被绘制；
+   * 旧实现对此返回非空字符串，于是 04 的 occlusion 与 06 的 _nudgePlan 会把它
+   * 当成不透明遮挡源，**凭空报出「文字被遮挡」**（实测 normColor('url(#nonexistent)')
+   * 返回 'url(#nonexistent)'）。
+   * 注意方向：**能解析到**的 url(#id) 仍然返回非空 —— 渐变按不透明处理，这是对的。
+   * 设计文档原设想「渐变被当成不遮挡 → 遮挡漏检」与代码事实相反（已用探针核实：
+   * normColor 对 url/命名色都返回非空），故此项只修悬空引用，不引入 stop-opacity 解析。 */
+  if (s.indexOf('url(') === 0) {
+    const m = s.match(/#([^)]+)\)/);
+    if (!m) return '';
+    return paintRefExists(m[1]) ? s.slice(0, 20) : '';
+  }
   if (s[0] === '#') {
     if (s.length === 4) s = '#' + s[1] + s[1] + s[2] + s[2] + s[3] + s[3];
     return s.slice(0, 7);
@@ -2239,6 +2926,32 @@ const Geo = {
     global_relayout: ['canvas_margin', 'overlap', 'occlusion', 'spacing', 'misalignment', 'text_overflow', 'edge_crossing', 'style_inconsistency', 'tiny_element']
   },
 
+  /* ==================== 提交原子性分级（F1） ====================
+   * 决定「一类的修复动作能否按 item 拆分提交」。07_patch.js 在整批被 op 级门淘汰后
+   * 读这张表：'whole' 维持整批提交（保持既有语义），其余按 item 增量提交。
+   *
+   * 'whole' —— 整类必须一次提交。判据是**组内一致性**：拆开会破坏不变量。
+   *            这些条目的理由在 07_patch.js 与 plan() 的 claim() 注释里都有实测记录
+   *            （整幅平移拆一半 → 留白更不对称；等距分布拆一半 → canvas 归零）。
+   * 'item'  —— 每个 item（= 一组 targets，见 claim() 的 ik()）独立提交，互不影响。
+   * 'cluster'—— 逐对齐簇独立，处理方式与 'item' 相同（保留独立取值是为了台账可读）。
+   *
+   * ★ 未声明的类型一律按 'item'：漏声明时最坏只是多花几次校验；
+   *   若默认 'whole' 则会重演「9 个 item 对、1 个 item 错 → 整类丢弃」的退化。
+   *   失败方向必须选安全的那一侧。 */
+  ATOMIC: {
+    canvas_margin: 'whole',        /* 整幅平移 + 扩画布，拆开必然破坏对称留白 */
+    spacing: 'whole',              /* 等距分布必须整行/整列一起挪（实测拆了 canvas 归零） */
+    edge_crossing: 'whole',        /* 整组重路由，拆开会让新路径互相打架 */
+    misalignment: 'cluster',       /* 逐对齐簇独立 */
+    text_overflow: 'item',         /* 逐容器独立 */
+    style_inconsistency: 'item',   /* 逐节点字号/填充独立 */
+    tiny_element: 'item',          /* 逐元素独立 */
+    overlap: 'item',               /* 逐对独立 */
+    occlusion: 'item'              /* 逐文字独立 */
+  },
+  atomicity(type) { return this.ATOMIC[type] || 'item'; },
+
   /* ==================== 节点可动空间（供多策略共用） ==================== */
   freeSpace(ir, node, minGap) {
     const mg = minGap === undefined ? 10 : minGap;
@@ -2306,7 +3019,12 @@ const Geo = {
       case 'text_overflow:reduce_font': return this.evReduceFont(ir, issues, st);
       case 'overlap:move_apart': return this.evMoveApart(ir, an, issues);
       case 'overlap:grow_spacing': return this.evGrowSpacing(ir, an, issues, st);
-      case 'overlap:global_relayout': return { score: 30, detail: '整体重排：改动面最大', risky: true };
+      /* ★ F4a：global_relayout 曾是**幽灵策略** —— 在 LABEL/PHASES/evaluate/候选表里都有，
+       * 但 plan() 的 switch 没有对应 case → 落 default → 0 op → 顺位回退到共用 separation()
+       * 的 move_apart / grow_spacing，于是三条候选给出**完全相同的数字**，让 Laya 的 ranks
+       * 与台账都在说谎。候选表里有幻觉比候选少更糟，故先把桩降为「不可用」；
+       * 真正实现区域重排时再连同 6 处注册点一起恢复。 */
+      case 'overlap:global_relayout': return { score: 0, detail: '未实现（已下线，不再参与排序）', risky: true };
       case 'occlusion:nudge_text': return this.evNudgeText(ir, issues, st);
       case 'occlusion:raise_text': return this.evRaiseText(issues);
       case 'misalignment:snap_edges': return this.evSnap(ir, an, 'edges');
@@ -2645,7 +3363,13 @@ const Geo = {
         : ir.edges.find(x => it.targets.indexOf(x.id) >= 0);
       if (e) edges.add(e);
     }
-    const list = [...edges].slice(0, 6);
+    /* 预检上限：只试前 N 条连线。★F8：上限从 6 提到 12，并且**显式声明截断**
+     * ——旧实现静默忽略第 7 条之后的连线，决策层会误以为已全覆盖。
+     * 上限存在的原因是 routeEdge 是 O(E) 的栅格 A*，预检阶段要控制总开销。 */
+    const REROUTE_PRE = 12;
+    const all = [...edges];
+    const list = all.slice(0, REROUTE_PRE);
+    const trunc = all.length > list.length ? `；另有 ${all.length - list.length} 条未预检（仅取前 ${REROUTE_PRE} 条）` : '';
     let ok = 0, worst = null;
     for (const e of list) {
       const r = this.routeEdge(ir, e);
@@ -2655,7 +3379,7 @@ const Geo = {
     const n = list.length || 1;
     return {
       score: r2(clamp(100 * ok / n, 0, 100)), risky: ok < n,
-      detail: `${ok}/${n} 条连线找到无穿越正交路径${worst ? '；失败：' + worst : ''}`
+      detail: `${ok}/${n} 条连线找到「零节点穿越且不增加交叉」的正交路径${worst ? '；失败：' + worst : ''}${trunc}`
     };
   },
 
@@ -2933,6 +3657,15 @@ const Geo = {
       }
       let items = byType[type];
       if (!gate.safeAll) items = items.filter(i => i.priority !== 'critical');
+      /* ★ F1：本轮已按 item 提交失败的 (策略, item) 组合不再产出。
+       * 注意 `key` 在此处**已经定稿**（上面的回退阶梯刚算完），所以组合键里必须带上
+       * 当前策略 —— 只用 item 会让一个策略的失败连带封杀同类问题的其它策略（实测回归）。
+       * 键与 07_patch 的写入端同构：gateKey + '|' + itemTargets。 */
+      if (sopt && sopt.rejectItems && sopt.rejectItems.length) {
+        const gk = type + '|' + (key || '');
+        items = items.filter(i => sopt.rejectItems.indexOf(
+          gk + '|' + (i && i.targets ? i.targets.join(',') : '')) < 0);
+      }
       if (!items.length) continue;
       groups.push({ type, key, items, phase: phase.indexOf(type), src: rec ? rec.source : 'rule' });
     }
@@ -2951,6 +3684,14 @@ const Geo = {
        *  itemKey —— 仅用于台账展示「这批里包含哪几条 issue」。 */
       op.gateKey = cur.type + '|' + (cur.key || '');
       if (itemKey !== undefined && itemKey !== null) op.itemKey = cur.type + '|' + itemKey;
+      /* ★F1 修正（实测回归后补）：item 级黑名单必须**按策略分域**，因此另存裸目标串。
+       * 只按 item 记账会把「wrap_text 在这个 item 上失败」误推广成「这个 item 在任何
+       * 策略上都无救」，从而连带封杀 resize_container / move_text 等同 item 的其它策略。
+       * 实测代价：real-02 丢掉一次本会被接受的 resize_container#5（72.15 → 68.95），
+       * real-03 丢掉 resize_container#2（69.95 → 69.55）。旧版的 gateKey 黑名单是
+       * 「issue 类型 + 策略」二元键，item 级黑名单必须保持同样的粒度。
+       * 组合键 = gateKey + '|' + itemTargets（见 plan() 里的过滤与 07_patch 的写入）。 */
+      if (itemKey !== undefined && itemKey !== null) op.itemTargets = itemKey;
       if (owner.has(el)) { op.skipped = '该元素本轮已被 ' + owner.get(el) + ' 占用'; skipped.push(op); return false; }
       owner.set(el, op.strategy);
       ops.push(op);
@@ -3086,7 +3827,17 @@ const Geo = {
             const span = axis === 'x' ? R.right(sorted[sorted.length - 1].geomBox) - sorted[0].geomBox.x
                                       : R.bottom(sorted[sorted.length - 1].geomBox) - sorted[0].geomBox.y;
             const sumW = sorted.reduce((a, n) => a + (axis === 'x' ? n.geomBox.w : n.geomBox.h), 0);
-            const base = g.key === 'distribute_weighted' ? null : (span - sumW) / (sorted.length - 1);
+            /* ★ F4b：grow_spacing 与 move_apart 语义分家。
+             * 旧实现里 grow_spacing 与 move_apart **共用 separation() 同一段代码**
+             * （只换 g.key 与标签），于是两条候选在实测台账里给出逐字相同的数字，
+             * 而 "整体扩间距" 这个名字承诺的是组级行为。这里把它接到组级设施上：
+             * 目标间距取「观测均值」与「风格 gap」的较大者 —— 即"向风格目标拉开"，
+             * 而 distribute_equal 仍是"归一到观测跨度"。出画布保护（见下）与
+             * 最小间距 6px 继续生效，所以"拉开"永远不会把元素扔出画布。 */
+            const observed = (span - sumW) / (sorted.length - 1);
+            const base = g.key === 'distribute_weighted' ? null
+                       : g.key === 'grow_spacing' ? Math.max(observed, st.gap)
+                       : observed;
             let cursor = axis === 'x' ? sorted[0].geomBox.x : sorted[0].geomBox.y;
             const wsum = sorted.reduce((a, n) => a + n.importance, 0);
             for (let i = 0; i < sorted.length; i++) {
@@ -3253,6 +4004,12 @@ const Geo = {
           for (const it of g.items) {
             const n = ir.nodes.find(x => x.id === it.targets[0]);
             if (!n) continue;
+            /* ★F7 双保险：即使 issue 侧误报，几何侧也不放大容器/装饰件。
+             * 放大一个无标签的装饰件或满版容器既无视觉收益，又必然造成碰撞。 */
+            if (n.role && n.role !== 'data' && n.role !== 'label') {
+              skipped.push({ skipped: `该元素是 ${n.role}，不参与尺寸归一`, strategy: g.key, issueType: g.type, target: n.describe });
+              continue;
+            }
             const scale = Math.sqrt(Math.max(1, (ir.medArea * 0.5) / Math.max(1, R.area(n.geomBox))));
             if (scale < 1.05) continue;
             const newW = r2(n.geomBox.w * scale), newH = r2(n.geomBox.h * scale);
@@ -3545,6 +4302,10 @@ const Geo = {
    *      推到 y=448（容器只到 434.5）→「文字超出背景图形」。
    *   ② 不得与同一容器内的**其它标签**重叠 —— 多标签卡片的两个标签各自被吸到容器中心后
    *      会重合（实测 baseline 448 / 443.67 只差 4px）→「文字被遮挡」。
+   *   ③ ★F3：不得落进**其它节点**的容器范围、也不得压到自由文本。护栏②只覆盖
+   *      「同节点兄弟标签」，范围小于缺陷范围：把文字吸到容器中心时，它可能越出
+   *      与邻居的视觉边界（对 textFit / occlusion 两个口径而言就是新缺陷）。
+   *      这一层只做**否决**，不参与位移择优，因此不会改变既有成功案例的位移量。
    * 任一护栏不满足就返回 null（宁可不动）。坐标系换算：`geomBox`/`bbox` 是 world，
    * 写回的 x/y 是元素**本地**属性，需按 CTM 的 x/y 缩放折算。 */
   anchorDelta(ir, n, l) {
@@ -3562,6 +4323,48 @@ const Geo = {
       if (o === l || !o.bbox) continue;
       const inter = R.intersect(after, o.bbox);
       if (inter && inter.w > 1 && inter.h > 1) return null;
+    }
+    /* ★F3 护栏③：跨节点。只查「落进别人容器」与「压住自由文本」两件事 ——
+     * 二者都是明确缺陷；不查与其它节点**标签**的重叠，因为标签在 IR 里不互相排斥，
+     * 那样会把大量合法排版（密集标签图）一刀否决。
+     * 复用 wouldCollide 而不是手写 R.intersect：它的 coverRatio ≥ 0.95 豁免正好放过
+     * 「标签完整落在父容器 / 满版底板内」这一合法情形（coverRatio 按较小面积归一，
+     * 故 label 完全在底板内时比值 = 1）；手写版本会让所有带背景底板的图一条
+     * move_text 都产不出来。口径与 Analyzer.collision 同源（见 wouldCollide 注释）。 */
+    if (ir && ir.nodes && this.wouldCollide(ir, n, after, [n])) return null;
+    /* ★F3 护栏④（依据 tests/diag_batch.cjs 的实测归因追加）：**不得把标签搬到不透明形状之下**。
+     * 上面 ③ 复用 wouldCollide 时继承了它 coverRatio ≥ 0.95 的豁免。那个豁免本意是放过
+     * 「标签完整待在自己父容器 / 满版底板内」这一合法嵌套 —— 但它**同样**放过了
+     * 「标签完整落进另一个不透明、且绘制更晚的容器底下」，而后者恰是 Analyzer.occlusion
+     * 判为缺陷、op 级门必然扣分的形态。于是出现「几何自认为修好了、门禁测出劣化」的错配。
+     * 实测代价：move_text 批次里 opFixAnchor 把 H1 标题整体平移 (697.5, 449.5)px 到画布中心，
+     * 落在 n23/n25（文档序更靠后、不透明）之下 → occlusion 由 0 变 2 →
+     * occlusion.density = 0.5 正好等于 collSat → metrics.collision 从 96 塌到 0
+     * → 整批 10 个 op 被全数否决（这就是「collision 96→0」的直接成因）。
+     * 判据与 Analyzer.occlusion **同源**：不透明、非属主、非背景、文档序在文字之后、
+     * 两维交叠 ≥6px（排除发丝级接触）。
+     * 只否决「**新引入**」的遮挡：若标签当前位置本就被同一形状压着，搬过去仍被压
+     * 不构成新缺陷，不能因此否决 —— 否则所有位于遮挡下的标签都永远修不动。 */
+    if (ir && ir.nodes && l.elem) {
+      const FOLLOWING = 4;
+      for (const m of ir.nodes) {
+        if (m === n || m.isBg) continue;                 /* 与 Analyzer.occlusion 的排除项一致 */
+        if (!normColor(m.fill)) continue;                /* 无填充 / 透明 / 悬空 paint 引用 → 不遮挡 */
+        const ia = R.intersect(after, m.geomBox);
+        if (!ia || ia.w < 6 || ia.h < 6) continue;
+        const ib = R.intersect(l.bbox, m.geomBox);
+        if (ib && ib.w >= 6 && ib.h >= 6) continue;      /* 本来就被压 → 不算新引入 */
+        let later = false;
+        try { later = (l.elem.compareDocumentPosition(m.shapeElem || m.elem) & FOLLOWING) !== 0; } catch (x) {}
+        if (later) return null;
+      }
+    }
+    if (ir && ir.freeTexts) {
+      for (const t of ir.freeTexts) {
+        if (!t || !t.bbox || t.elem === l.elem) continue;
+        const inter = R.intersect(after, t.bbox);
+        if (inter && inter.w > 1 && inter.h > 1) return null;
+      }
     }
     return { dx, dy, dwx: dwx, dwy: dwy, after };
   },
@@ -3685,6 +4488,28 @@ const Geo = {
    * 表现为 collision 维度被自己改坏（实测 96→90 后整轮被守卫回滚）。 */
   separation(ir, p) {
     const a = p.aRef, b = p.bRef;
+    /* ★ 本体规则「位移上限」的几何端（声明在 05b_ontology.js RULES.displace_cap）
+     * 实测病理：`circle#svg_75` 与装饰环 `circle#svg_27` 只重叠 **7.8px**（在 y 轴），
+     * 正确的 y 向小位移因会撞第三个节点而被 `wouldCollide` 过滤掉，于是候选里只剩
+     * 「沿 x 把 a 的右边缘搬到 b 的左边缘」= `1482.8 − 1278 + 10` = **214.8px** —— 27 倍过度修正。
+     * 规则内容：位移必须与**实际重叠量**同量级，d_max = max(K × 重叠量, 画布短边 × frac)；
+     * 全部候选都超限时返回 null（跳过，而不是远距离搬运）。
+     *
+     * ★★ 默认**关闭**（opt-in：ir.opts.ontDisplaceCap === true）。原因见 palantir_value.cjs：
+     *   本函数是**共享**设施（两处调用点：overlap 的推开、以及 reroute 家族的取点），
+     *   在目标文件上开启本上限代价 −4.10 分，且结构不变量反而变差
+     *   （containPx 128→253.71、guideSpreadMax 183→211.83、attachErrMax 36→42.01）——
+     *   因为它挡掉的正是**在被接受、并在修复几何**的那些动作。
+     *   规则本身有据（214.8px 是真实的过度修正），但要生效必须先把调用点拆开、
+     *   逐条定价后再开，不能默认全图收紧。 */
+    const OC = (typeof Ontology !== 'undefined' && Ontology && Ontology.DEF) ? Ontology.DEF : {};
+    const K = typeof OC.displaceK === 'number' ? OC.displaceK : 1.5;
+    const FR = typeof OC.displaceFrac === 'number' ? OC.displaceFrac : 0.06;
+    const capOff = !(ir && ir.opts && ir.opts.ontDisplaceCap === true);
+    const cvW = (ir && ir.canvas && ir.canvas.w) || 1920;
+    const cvH = (ir && ir.canvas && ir.canvas.h) || 1080;
+    const dMax = capOff ? Infinity
+      : Math.max(K * Math.abs(p.depth || 0), FR * Math.min(cvW, cvH));
     const base = (axis, dir) => {
       const v = axis === 'x'
         ? (dir > 0 ? R.right(a.geomBox) - b.geomBox.x + 10 : R.right(b.geomBox) - a.geomBox.x + 10)
@@ -3712,11 +4537,14 @@ const Geo = {
       }
     }
     if (!cands.length) return null;
+    /* ★ 先按位移上限过滤（本体规则），再挑无新碰撞者 */
+    const pool = capOff ? cands : cands.filter(c => c.dist <= dMax + 0.01);
+    if (!pool.length) return null;
     /* ★ 只在「无新碰撞」的候选里挑最小位移。
      * 全部候选都会撞上第三个节点时返回 null —— 几何引擎不主动制造新碰撞，
      * 把它交回决策层换策略（move_apart → grow_spacing → global_relayout）。
      * 曾经的「退而取碰撞最轻的一个」会稳定地把 collision 改坏（实测 96→90 后被守卫否决）。 */
-    const good = cands.filter(c => !c.hit);
+    const good = pool.filter(c => !c.hit);
     if (!good.length) return null;
     good.sort((x, y) => x.dist - y.dist);
     return good[0];
@@ -3760,8 +4588,29 @@ const Geo = {
   },
 
   /* ==================== 正交避障重路由 ==================== */
+  /* ★F8：两条折线之间的交叉段数（无向，按段对计数）。
+   * 口径要点：这里只用于**前后对比**（原路径 vs 新路径），因此共享端点造成的
+   * 冗余计数对两侧同权、会在比较中抵消。不要把它当成绝对交叉数对外报告。 */
+  _crossCount(pts, others) {
+    if (!pts || pts.length < 2) return 0;
+    let n = 0;
+    for (const o of others) {
+      const q = o && o.pts;
+      if (!q || q.length < 2) continue;
+      for (let i = 1; i < pts.length; i++) {
+        for (let j = 1; j < q.length; j++) {
+          if (Seg.cross(pts[i - 1], pts[i], q[j - 1], q[j])) n++;
+        }
+      }
+    }
+    return n;
+  },
+
   routeEdge(ir, e) {
-    const clear = 10, cell = 8;
+    /* ★F8 新增 EDGE_PEN：其它连线所在格子的附加代价。
+     * 取 6 的依据：空格代价 1、转向罚 2.2 —— 6 足以让 A* 宁可多绕几格也不压线，
+     * 但仍是**软惩罚**，不会造成无解（硬阻塞会让连线密集的图大面积退化成 L 形）。 */
+    const clear = 10, cell = 8, EDGE_PEN = 6;
     const src = e.source ? ir.nodes.find(n => n.id === e.source) : null;
     const dst = e.target ? ir.nodes.find(n => n.id === e.target) : null;
     const a = e.pts[0], b = e.pts[e.pts.length - 1];
@@ -3788,6 +4637,52 @@ const Geo = {
       for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) blocked[idx(i, j)] = 1;
       avoided++;
     }
+
+    /* ★F8：把「其它边」也纳入代价。旧实现只把节点当障碍，于是 edge-over-edge
+     * 交叉**永远修不掉**（Analyzer 一直在计 edgeRouting，几何层却看不见）。
+     * 做法是**软惩罚**而非加入 blocked：连线之间本来就近，硬阻塞会让 A* 大面积无解。 */
+    const edgeOcc = new Uint8Array(nx * ny);
+    const others = (ir.edges || []).filter(x => x !== e && x && x.pts && x.pts.length >= 2);
+    for (const e2 of others) {
+      for (let i = 1; i < e2.pts.length; i++) {
+        const p = e2.pts[i - 1], q = e2.pts[i];
+        const steps = Math.max(1, Math.ceil(Math.hypot(q.x - p.x, q.y - p.y) / (cell * 0.5)));
+        for (let s = 0; s <= steps; s++) {
+          const x = p.x + (q.x - p.x) * (s / steps), y = p.y + (q.y - p.y) * (s / steps);
+          edgeOcc[idx(clamp(Math.round(x / cell), 0, nx - 1), clamp(Math.round(y / cell), 0, ny - 1))] = 1;
+        }
+      }
+    }
+
+    /* 原路径基线：用于「绝不更差」判定（节点穿越数 + 边交叉数） */
+    const origCross = this._crossCount(e.pts, others);
+    let origNodeHits = 0;
+    const evalPath = pts => {
+      let nh = 0;
+      for (const n of ir.nodes) { if (skip.has(n.id)) continue; nh += Seg.hitsRect(pts, n.geomBox, 1); }
+      return { nh, nc: this._crossCount(pts, others) };
+    };
+    for (const n of ir.nodes) { if (skip.has(n.id)) continue; origNodeHits += Seg.hitsRect(e.pts, n.geomBox, 1); }
+
+    const lCands = vertical
+      ? [[{ x: S.x, y: S.y }, { x: S.x, y: T.y }, { x: T.x, y: T.y }],
+         [{ x: S.x, y: S.y }, { x: T.x, y: S.y }, { x: T.x, y: T.y }]]
+      : [[{ x: S.x, y: S.y }, { x: T.x, y: S.y }, { x: T.x, y: T.y }],
+         [{ x: S.x, y: S.y }, { x: S.x, y: T.y }, { x: T.x, y: T.y }]];
+    /* L 形兜底：保持原有的「零节点穿越」硬门，另加 F8 的「不增加边交叉」软门 */
+    const tryL = () => {
+      let best = null;
+      for (const c of lCands) {
+        const s = evalPath(c);
+        const sc = s.nh * 1000 + s.nc;
+        if (!best || sc < best.sc) best = { c, sc, s };
+      }
+      if (best && best.s.nh === 0 && best.s.nc <= origCross) {
+        return { pts: Seg.simplifyOrtho(best.c), avoided, fallback: 'L',
+                 nodeHits: 0, edgeCross: best.s.nc, origEdgeCross: origCross };
+      }
+      return null;
+    };
     const toI = p => ({ i: clamp(Math.round(p.x / cell), 0, nx - 1), j: clamp(Math.round(p.y / cell), 0, ny - 1) });
     const s = toI(S), t = toI(T);
     const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -3816,25 +4711,16 @@ const Geo = {
         const ni = i + DIRS[nd][0], nj = j + DIRS[nd][1];
         if (!freeCell(ni, nj)) continue;
         const nk = key(ni, nj, nd);
-        const cost = g0 + 1 + (nd === d ? 0 : 2.2);
+        const cost = g0 + 1 + (nd === d ? 0 : 2.2) + (edgeOcc[idx(ni, nj)] ? EDGE_PEN : 0);
         if (cost < gScore[nk]) { gScore[nk] = cost; prev[nk] = k; push(cost + h(ni, nj), nk); }
       }
     }
     if (found < 0) {
-      /* 退化为 L 形：两个方向都试，取不穿越者 */
-      const cands = vertical
-        ? [[{ x: S.x, y: S.y }, { x: S.x, y: T.y }, { x: T.x, y: T.y }],
-           [{ x: S.x, y: S.y }, { x: T.x, y: S.y }, { x: T.x, y: T.y }]]
-        : [[{ x: S.x, y: S.y }, { x: T.x, y: S.y }, { x: T.x, y: T.y }],
-           [{ x: S.x, y: S.y }, { x: S.x, y: T.y }, { x: T.x, y: T.y }]];
-      let best = null, bestHits = Infinity;
-      for (const c of cands) {
-        let hits = 0;
-        for (const n of ir.nodes) { if (skip.has(n.id)) continue; hits += Seg.hitsRect(c, n.geomBox, 1); }
-        if (hits < bestHits) { bestHits = hits; best = c; }
-      }
-      if (best && bestHits === 0) return { pts: Seg.simplifyOrtho(best), avoided, fallback: 'L' };
-      return { failed: true, avoided, reason: 'A* 与 L 形均未找到无穿越路径' };
+      /* 退化为 L 形：两个方向都试，取「零节点穿越 + 不增加边交叉」者 */
+      const l = tryL();
+      if (l) return l;
+      return { failed: true, avoided, reason: 'A* 与 L 形均未找到「零节点穿越且不增加边交叉」的路径',
+               origNodeHits, origEdgeCross: origCross };
     }
     const cells = [];
     let k = found;
@@ -3850,7 +4736,19 @@ const Geo = {
       if (Math.abs(last.x - T.x) > 0.6 || Math.abs(last.y - T.y) > 0.6) pts.push(T);
       pts = Seg.simplifyOrtho(pts, 0.5);
     }
-    return { pts, avoided, fallback: 'astar' };
+    /* ★F8 接受判据：绝不更差（节点穿越数不增加 且 边交叉数不增加）。
+     * 旧实现**无条件**接受 A* 结果，因此「重路由」有可能反而增加交叉（Analyzer 会扣分，
+     * 而几何层自认为修好了）。这里补上否决权；被否决时先退 L 形，再不行返回 failed
+     * （不发 op）—— 保证「要么更好、要么不动」。 */
+    const as = evalPath(pts);
+    if (as.nh <= origNodeHits && as.nc <= origCross) {
+      return { pts, avoided, fallback: 'astar', nodeHits: as.nh, edgeCross: as.nc, origEdgeCross: origCross };
+    }
+    const l2 = tryL();
+    if (l2) return l2;
+    return { failed: true, avoided,
+             reason: 'A* 路径在「节点穿越 / 边交叉」上不优于原路径，且 L 形不可行',
+             astarNodeHits: as.nh, astarEdgeCross: as.nc, origNodeHits, origEdgeCross: origCross };
   },
 
   /* ==================== DOM 应用原语 ==================== */
@@ -4360,7 +5258,803 @@ const LayaDecide = {
     const safeNo = applied.safe_to_auto_fix && !applied.safe_to_auto_fix.choice;
     const gate = { relayout: !!(applied.should_relayout && applied.should_relayout.choice), safeAll: !safeNo };
 
-    return { plan, qs, applied, raw, stateText, err, gate, meta: raw && raw.meta ? raw.meta : null };
+    /* ★ 本体 + 规则围栏（05b_ontology.js）
+     * 职责：在「分数门」之前再加一道**结构门** —— 分数看不见结构破坏（实测一轮美化
+     * +8.4 分的同时把平台栈极差 211.83 改成 266.1、把箭头错位 21.5/42.01 改成 36/72、
+     * 把两条 1942/1957px 装饰样条压成一条直线）。围栏只**收窄**动作集，绝不新增动作。
+     * 软依赖：本体未加载或构建失败时整体放行（不得因本体报错而阻断修复）。 */
+    let fence = null;
+    if (typeof Ontology !== 'undefined' && Ontology && Ontology.fence) {
+      fence = Ontology.fence(ir, an, applied, gate, o);
+      if (fence && fence.gate) Object.assign(gate, fence.gate);
+    }
+
+    return { plan, qs, applied, raw, stateText, err, gate, fence, meta: raw && raw.meta ? raw.meta : null };
+  }
+};
+
+</script>
+<script>
+/* =============================================================================
+ * SVG Beautifier · 05b 内置本体 + 规则围栏（Ontology & Rule Fence）
+ *
+ * ── 为什么需要这一层（实测驱动，见 svgb_ontology_feasibility-v1.md）──
+ * 现有管线是「扁平 IR + 症状检测器 + 贪心 op + 分数门」。它能看见 40 个节点，
+ * 但看不见「4 条层叠 bar 是一个堆叠」「6 个卫星是一个径向组」「这条箭头锚在那个方块上」。
+ * 于是 op 逐对独立地移动元素，破坏了共享导引、把方块和它的箭头拆散、把 bar 推出卡片。
+ * 实测归因（.svgbuild/palantir_attr.cjs）：一轮美化让分数 +8.4（30.35→38.75），同时
+ *   · 平台栈左边缘极差 211.83 → 266.1
+ *   · 卡片 3 箭头错位 21.5/42.01 → 36/72
+ *   · 平台栈 2 条 bar 整条跑出卡片；+3 条路径退化为零尺寸
+ *   · 为消除一个 7.8px 的重叠，把一个卫星沿 x 推了 214px
+ *
+ * ── 三条设计纪律（都是实测结论，不是偏好）──
+ * ① **几何优先**：所有事实只从几何/属性推出。实测 10 个文件里 id 可用数 = 0/582
+ *    （9 个手写原稿一个 id 都没有；palantir 的 137 个 id 全是 svgcanvas 机生的 svg_\d+），
+ *    class 只在 6/10 文件存在，注释通道还会被本工具自己的保存摧毁（相邻率 100%→25%，
+ *    而注释正是 onto 那张图的唯一结构线索）。**唯一 10/10 可用的通道是几何。**
+ *    因此本模块不读 id、不读 class、不读 XML 注释。
+ * ② **约束是布尔硬门，不是加权分**：加权分会被其它维度增益抵消 —— 实测那轮 +
+ *    edgeRouting +5.4 抵消了全部结构损失（把两条 1942/1957px 装饰样条压成 y=540 一条直线，
+ *    同时让 5 条连线退化）。把结构量混进 WEIGHTS 会原样重演这个失败。
+ * ③ **fail-closed**：置信度不足时**收窄动作集**，而不是照常输出 op。
+ *
+ * ── 边界 ──
+ * 本层只回答「这张图的结构是什么、哪些动作会破坏它」，**不产生任何坐标**。
+ * 数值真相仍在几何引擎（设计文档 §5：Laya 只回答「做什么」）。
+ * ===========================================================================*/
+'use strict';
+
+const Ontology = {
+  /* 全部阈值集中在此，便于定标与消融。单位：px（K 结尾的是相对系数） */
+  DEF: {
+    frameMinInside: 2,     /* 一个节点要被认定为「容器框」，至少需包含几个其它节点中心 */
+    containPad: 12,        /* 内框余量：溢出超过它才算越界（吸收描边/圆角噪声） */
+    guideTol: 2.0,         /* 「已经对齐」的容差 τ_g */
+    guideIntentK: 0.12,    /* 「本应对齐」的意图容差 = 作用域短边 × k */
+    guideIntentMax: 48,    /* 意图容差上限 */
+    guideMin: 3,           /* 一条导引至少几个成员 */
+    anchorTol: 2.0,        /* 锚点错位容差：超过才算「箭头没对准」 */
+    decoOpacity: 0.3,      /* 透明度 ≤ 此值 → 装饰件（不参与重叠/重路由） */
+    stackMin: 3,           /* 堆叠/成行至少几个成员 */
+    sizeTolK: 0.08,        /* 同尺寸容差（相对） */
+    radialMin: 4,          /* 径向组至少几个成员 */
+    radialRadiusTol: 0.25, /* 径向半径相对极差上限（超过则不认作径向组） */
+    confMin: 0.5,          /* 置信度下限：低于此值走 fail-closed */
+    displaceK: 1.5,        /* ★ 位移上限系数：d_max = max(displaceK × 重叠量, displaceFrac × 画布短边) */
+    displaceFrac: 0.06
+  },
+
+  /* --------------------------------------------------------------------------
+   * 小工具
+   * ------------------------------------------------------------------------ */
+  num(v, d) { return (typeof v === 'number' && isFinite(v)) ? v : d; },
+  opacityOf(el) {
+    if (!el || !el.getAttribute) return 1;
+    const cands = [getA(el, 'opacity', ''), getA(el, 'fill-opacity', ''), getA(el, 'stroke-opacity', '')];
+    for (const c of cands) { const v = parseFloat(c); if (isFinite(v)) return v; }
+    try { const v = parseFloat(cssPrio(el, 'opacity')); if (isFinite(v)) return v; } catch (e) { /* 无 CSS 上下文 */ }
+    return 1;
+  },
+  /* fill 是否「不填充」（描边件） */
+  fillNoneOf(el, fill) {
+    if (!el) return false;
+    const f = String(fill || getA(el, 'fill', '') || '').trim().toLowerCase();
+    return !f || f === 'none' || f === 'transparent' || f === 'rgba(0, 0, 0, 0)';
+  },
+
+  /* --------------------------------------------------------------------------
+   * 本体构建：事实层 + 结构层
+   * 输入：IR（ir.nodes / ir.edges / ir.canvas / ir.opts）+ 分析态（an，只用于读候选）
+   * 输出：本体对象（纯数据、可序列化、确定性）
+   * ------------------------------------------------------------------------ */
+  build(ir, an, o) {
+    o = o || {};
+    const D = this.DEF;
+    const T = {
+      frameMinInside: this.num(o.ontFrameMin, D.frameMinInside),
+      containPad: this.num(o.ontContainPad, D.containPad),
+      guideTol: this.num(o.ontGuideTol, D.guideTol),
+      guideIntentK: this.num(o.ontGuideIntentK, D.guideIntentK),
+      guideIntentMax: this.num(o.ontGuideIntentMax, D.guideIntentMax),
+      guideMin: this.num(o.ontGuideMin, D.guideMin),
+      anchorTol: this.num(o.ontAnchorTol, D.anchorTol),
+      decoOpacity: this.num(o.ontDecoOpacity, D.decoOpacity),
+      stackMin: this.num(o.ontStackMin, D.stackMin),
+      sizeTolK: this.num(o.ontSizeTolK, D.sizeTolK),
+      radialMin: this.num(o.ontRadialMin, D.radialMin),
+      radialRadiusTol: this.num(o.ontRadialRadiusTol, D.radialRadiusTol),
+      confMin: this.num(o.ontConfMin, D.confMin)
+    };
+    const notes = [];
+    const empty = () => ({ ok: false, conf: 0, notes, frames: [], owner: Object.create(null), guides: [],
+                           patterns: { stacks: [], rows: [], radials: [] }, attachments: [],
+                           decorative: { nodes: [], edges: [] }, degenerate: [], stats: {
+                             nodes: 0, edges: 0, frames: 0, guides: 0, guideBreaks: 0,
+                             guideSpreadMax: 0, guideInfoBreaks: 0,
+                             attachments: 0, attachErrMax: 0, radials: 0, stacks: 0, rows: 0,
+                             decoNodes: 0, decoEdges: 0, degenerate: 0,
+                             containViolations: 0, containPx: 0, unowned: 0
+                           } });
+    if (!ir || !ir.ok || !(ir.nodes || []).length) { notes.push('IR 为空 → 本体不可用'); return empty(); }
+
+    const nodes = ir.nodes.filter(n => n && n.bbox && n.geomBox);
+    const edges = (ir.edges || []).filter(e => e && e.pts && e.pts.length >= 2);
+    const canvas = R.mk(0, 0, (ir.canvas && ir.canvas.w) || 0, (ir.canvas && ir.canvas.h) || 0);
+
+    /* ---------- 1. 事实层：装饰件 / 退化路径 ----------
+     * 装饰件判据只用「画笔画属性」，不看 class/id（纪律①）。
+     * ★ 容器优先：一个包裹了多个节点中心的描边件（如卡片外框 fill=none）不是装饰，
+     *   先算 insideCount，再决定谁是装饰 —— 否则会把卡片外框当装饰件排除掉。 */
+    const insideCount = new Map();
+    for (const n of nodes) {
+      let c = 0;
+      for (const m of nodes) {
+        if (m === n) continue;
+        if (R.has(n.geomBox, { x: R.cx(m.geomBox), y: R.cy(m.geomBox) })) c++;
+      }
+      insideCount.set(n.id, c);
+    }
+    /* 容器框只可能是**矩形类**图元。圆形/椭圆/路径是装饰环与波纹 ——
+     * 实测 4 个同心装饰圆（svg_27/28/29/55）会「顺带包含」5 个节点中心，
+     * 于是先被当容器框、又因「容器优先」被豁免装饰判定，凭空造出 6 条假越界。 */
+    const FRAME_SHAPES = ['rect', 'polygon', 'polyline', 'image', 'use'];
+    const isFrameShape = n => FRAME_SHAPES.indexOf(String(n.shape || '').toLowerCase()) >= 0;
+    const decorativeNodes = [];
+    for (const n of nodes) {
+      /* 容器优先：矩形类容器永不算装饰。★ 判据必须带 isFrameShape，
+       * 否则装饰圆会被这条豁免挡住（实测 decoNodes=0）。 */
+      if (isFrameShape(n) && (insideCount.get(n.id) || 0) >= T.frameMinInside) continue;
+      if (n.isBg) continue;
+      const op = this.opacityOf(n.shapeElem || n.elem);
+      if (op <= T.decoOpacity) { decorativeNodes.push(n.id); continue; }
+      /* 描边件（fill=none）+ 无标签 + 无子 → 装饰（圆环 / 细线 / 分隔件） */
+      if (this.fillNoneOf(n.shapeElem || n.elem, n.fill) && !n.labels.length && (n.strokeWidth > 0 || n.stroke)) {
+        decorativeNodes.push(n.id);
+      }
+    }
+    const decoNodeSet = new Set(decorativeNodes);
+    const decorativeEdges = [];
+    for (const e of edges) {
+      if (this.opacityOf(e.elem) <= T.decoOpacity) decorativeEdges.push(e.id);
+    }
+    const decoEdgeSet = new Set(decorativeEdges);
+
+    /* 退化路径：两端包围盒塌缩成一个点（实测 orthogonal_reroute 把 5 条连线改成 w=0,h=0）。
+     * 注意「竖直/水平连线」的 w 或 h 本来就为 0，**不算退化** —— 必须两者都塌缩。 */
+    const degenerate = [];
+    for (const e of edges) {
+      const b = R.fromPoints(e.pts);
+      if (b.w < 1 && b.h < 1) { degenerate.push(e.id); continue; }
+      if (Seg.len(e.pts) < 1) degenerate.push(e.id);
+    }
+
+    /* ---------- 2. 结构层：容器框（frame）与唯一归属 ----------
+     * 归属唯一性由「最小包含框」规则**构造性保证**，不依赖 RegionGraph 的 members
+     * （实测 RegionGraph 在 palantir 上 invariant=false、sumMembers 51 > 40 节点、
+     *   r10/r11 包围盒完全相同、r6/r7 横跨两张卡片 —— 它的成员表会重复计数）。
+     * ★ 容器框必须是矩形类图元（FRAME_SHAPES，见 §1）。 */
+    const frameCands = nodes
+      .filter(n => !n.isBg && !decoNodeSet.has(n.id) && isFrameShape(n)
+                && (insideCount.get(n.id) || 0) >= T.frameMinInside)
+      .sort((a, b) => (R.area(b.geomBox) - R.area(a.geomBox)) || (a.id < b.id ? -1 : 1));
+    const frames = frameCands.map(n => ({ id: 'F:' + n.id, nodeId: n.id, node: n, box: n.geomBox,
+                                         inner: R.expand(n.geomBox, -T.containPad), members: [] }));
+    const frameById = new Map(frames.map(f => [f.id, f]));
+    const owner = Object.create(null);
+    for (const n of nodes) {
+      let best = null;
+      for (const f of frames) {
+        if (f.nodeId === n.id) continue;
+        if (!R.has(f.box, { x: R.cx(n.geomBox), y: R.cy(n.geomBox) })) continue;
+        if (!best || R.area(f.box) < R.area(best.box)) best = f;   /* 最小包含者 = 归属 */
+      }
+      owner[n.id] = best ? best.id : null;
+      /* members 只登记**真实内容**：装饰件与背景不参与容器成员表
+       * （实测背景整幅矩形的中心必然落在容器内，不过滤就会把背景算成成员）。 */
+      if (best && !decoNodeSet.has(n.id) && !n.isBg) best.members.push(n.id);
+    }
+    for (const f of frames) f.members.sort();
+    const unowned = nodes.filter(n => !owner[n.id] && !decoNodeSet.has(n.id)).length;
+
+    /* ---------- 3. 结构层：容器越界（containment）----------
+     * 判据：节点中心落在某容器框内 → 它整框都应落在该框内（留 containPad 余量）。
+     * 这正是实测缺陷的形状：卡片 4 的 Ontology bar 中心 x=1033.17 > 1010（在卡片内），
+     * 但左边缘 853.17 → 溢出 156.83px；卡片 2 的星图同理溢出 429.36px。 */
+    const containViolations = [];
+    let containPx = 0;
+    for (const n of nodes) {
+      if (decoNodeSet.has(n.id) || n.isBg) continue;
+      const fid = owner[n.id];
+      if (!fid) continue;
+      const f = frameById.get(fid);
+      if (!f) continue;
+      const ov = {
+        l: Math.max(0, f.box.x - n.geomBox.x),
+        r: Math.max(0, R.right(n.geomBox) - R.right(f.box)),
+        t: Math.max(0, f.box.y - n.geomBox.y),
+        b: Math.max(0, R.bottom(n.geomBox) - R.bottom(f.box))
+      };
+      const worst = Math.max(ov.l, ov.r, ov.t, ov.b);
+      if (worst > T.containPad) {
+        containPx += r2(worst);
+        containViolations.push({ nodeId: n.id, frameId: fid, describe: n.describe, overflow: r2(worst), side: worst === ov.l ? 'left' : worst === ov.r ? 'right' : worst === ov.t ? 'top' : 'bottom' });
+      }
+    }
+    containViolations.sort((a, b) => b.overflow - a.overflow);
+
+    /* ---------- 4. 结构层：导引（guides）----------
+     * 两级容差：guideTol = 「已经对齐」；意图容差 = 「本应对齐」（作用域短边 × k）。
+     * 单靠紧容差聚类无法发现「4 条 bar 本该左对齐却散开 211.83px」——
+     * 散得太开就永远聚不成类。所以先按意图容差聚，再把类内实际极差当作缺陷量。 */
+    const AXES = [
+      { axis: 'x', key: 'left', val: r => r.x },
+      { axis: 'x', key: 'right', val: r => R.right(r) },
+      { axis: 'x', key: 'centerX', val: r => R.cx(r) },
+      { axis: 'y', key: 'top', val: r => r.y },
+      { axis: 'y', key: 'bottom', val: r => R.bottom(r) },
+      { axis: 'y', key: 'centerY', val: r => R.cy(r) }
+    ];
+    const guides = [];
+    const scopeOf = n => (owner[n.id] || 'canvas');
+    const scopes = new Map();
+    for (const n of nodes) {
+      if (decoNodeSet.has(n.id)) continue;
+      const s = scopeOf(n);
+      if (!scopes.has(s)) scopes.set(s, []);
+      scopes.get(s).push(n);
+    }
+    for (const [scopeId, mem] of [...scopes.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+      if (mem.length < T.guideMin) continue;
+      const f = frameById.get(scopeId);
+      const shortSide = f ? Math.min(f.box.w, f.box.h) : Math.min(canvas.w, canvas.h);
+      const intentTol = Math.min(T.guideIntentMax, Math.max(6, shortSide * T.guideIntentK));
+      for (const A of AXES) {
+        const pts = mem.map(n => ({ n, v: A.val(n.geomBox) })).sort((a, b) => (a.v - b.v) || (a.n.id < b.n.id ? -1 : 1));
+        let i = 0;
+        while (i < pts.length) {
+          let j = i;
+          while (j + 1 < pts.length && (pts[j + 1].v - pts[i].v) <= intentTol) j++;
+          const grp = pts.slice(i, j + 1);
+          i = Math.max(j, i + 1);
+          if (grp.length < T.guideMin) continue;
+          const vals = grp.map(g => g.v);
+          const spread = r2(Math.max(...vals) - Math.min(...vals));
+          /* 值取中位数，避免被离群者拖动 */
+          const sortedV = vals.slice().sort((a, b) => a - b);
+          const value = r2(sortedV[Math.floor(sortedV.length / 2)]);
+          const members = grp.map(g => g.n.id).sort();
+          guides.push({ scope: scopeId, axis: A.axis, key: A.key, value, spread,
+                        aligned: spread <= T.guideTol, members,
+                        outliers: grp.filter(g => Math.abs(g.v - value) > T.guideTol * 2).map(g => g.n.id).sort() });
+        }
+      }
+    }
+    const brokenGuides = guides.filter(g => !g.aligned);
+
+    /* ---------- 5. 结构层：附着（attachments）----------
+     * ★ 必须**自己**解附着，不能信 IR 的 e.source/e.target。
+     *   实测本文件 13 条边的 26 个端点**全部**被判给 n14 —— 那是整幅背景 rect
+     *   `(0,0,1920,1080)`，它包含每一个端点，点到框距离恒为 0，最近节点永远是它。
+     *   于是 `e.attached` 恒真、附着信息完全不可用（这是 IR 的一个真实缺陷，登记为 F7）。
+     *   本层改为在**排除背景/容器**后重新求最近节点，再量化**锚点错位** ——
+     *   端点没对准锚点形状的中心轴。后者正是实测的「箭头与上方方块对齐不够精确」：
+     *   卡片 3 的箭头 x=228/490/752，方块中心 x=228/469/710 → 错位 0 / 21 / 42px。 */
+    const nodeById = new Map(nodes.map(n => [n.id, n]));
+    const attachTol = this.num(o.ontAttachTol, IR.DEF.portSlack);
+    const attachCand = nodes.filter(n => !n.isBg && !decoNodeSet.has(n.id) && n.role !== 'container');
+    /* ★ 必须是「贴到**边界**」才算附着，不能只看「在框内」。
+     *   在框内的点对整框距离恒为 0，于是任何**终止在容器内部空处**的连线都会被
+     *   算成锚在容器上（实测：合成图里两支不到底的箭头的下端落在卡片内部空处，
+     *   被算成锚在卡片上，凭空多出 2 条 err=0 的假附着）。
+     *   这也是「背景整幅矩形抢走全部端点」的同一类错误的通用形态。 */
+    const distToEdge = (p, b) => {
+      const dx = Math.max(b.x - p.x, 0, p.x - R.right(b));
+      const dy = Math.max(b.y - p.y, 0, p.y - R.bottom(b));
+      if (dx === 0 && dy === 0) return Math.min(p.x - b.x, R.right(b) - p.x, p.y - b.y, R.bottom(b) - p.y);
+      return Math.hypot(dx, dy);
+    };
+    /* 距离相同（端点落在框线上）时取**面积最小**者 —— 否则大容器永远赢 */
+    const resolveAttach = p => {
+      let best = null;
+      for (const n of attachCand) {
+        const d = distToEdge(p, n.geomBox);
+        if (d > attachTol) continue;
+        if (!best || d < best.d - 1e-6
+            || (Math.abs(d - best.d) <= 1e-6 && R.area(n.geomBox) < R.area(best.n.geomBox))) best = { n, d };
+      }
+      return best;
+    };
+    const attachments = [];
+    for (const e of edges) {
+      /* 装饰边的端点没有锚定语义 —— 它是一条波纹/样条扫过画面，
+       * 端点落点纯属巧合（实测 e15/e16 扫过容器侧边 → 假错位 365–395px）。 */
+      if (decoEdgeSet.has(e.id)) continue;
+      const ends = [{ end: 'source', p: e.pts[0] }, { end: 'target', p: e.pts[e.pts.length - 1] }];
+      let prevNode = null;
+      for (const en of ends) {
+        if (!en.p) continue;
+        const hit = resolveAttach(en.p);
+        if (!hit) continue;
+        /* 两端落在同一节点上 = 这条线没有连接两个形状（自环/经过），只记一端 */
+        if (prevNode && hit.n.id === prevNode) continue;
+        const n = hit.n, b = n.geomBox;
+        prevNode = n.id;
+        /* ★ 贴边判定必须用「离哪条边最近」，不能用区间包含：
+         *   端点落在底边上时，它同时满足 inX 与 inY（y 正好等于底边），
+         *   旧写法 `inX && !inY` 会把它判成角点 → err=0 → 实测 21/42px 错位全部漏掉。 */
+        const ST = 2;
+        const onVert = (Math.abs(en.p.y - b.y) <= ST || Math.abs(en.p.y - R.bottom(b)) <= ST)
+                    && en.p.x >= b.x - ST && en.p.x <= R.right(b) + ST;
+        const onHorz = (Math.abs(en.p.x - b.x) <= ST || Math.abs(en.p.x - R.right(b)) <= ST)
+                    && en.p.y >= b.y - ST && en.p.y <= R.bottom(b) + ST;
+        let err = 0, kind = 'corner';
+        if (onVert && !onHorz) { err = Math.abs(en.p.x - R.cx(b)); kind = 'vertical'; }
+        else if (onHorz && !onVert) { err = Math.abs(en.p.y - R.cy(b)); kind = 'horizontal'; }
+        /* 合理性上限用 **min(w,h)**：连接线只能相对「紧凑的方框」谈对齐，
+         * 对上一根长条（底座 772×58）时端点本来就该分散落位 ——
+         * 用 max 会把「三条箭头扇形汇入底座」误判成 262px 错位（实测）。 */
+        const plausible = err <= 0.5 * Math.min(b.w, b.h);
+        attachments.push({ edge: e.id, end: en.end, nodeId: n.id, dist: r2(hit.d),
+                           kind, err: r2(err), plausible,
+                           misaligned: err > T.anchorTol && plausible,
+                           px: r2(en.p.x), py: r2(en.p.y) });
+      }
+    }
+    const badAnchors = attachments.filter(a => a.misaligned);
+    /* 只统计**可信**的错位：不可信的（线只是经过该节点）不计入不变量，
+     * 否则「三条箭头扇形汇入底座」会把 attachErrMax 顶到 262px（实测）。 */
+    const attachErrMax = attachments.reduce((m, a) => Math.max(m, a.plausible ? a.err : 0), 0);
+
+    /* ---------- 6. 结构层：模式（堆叠 / 成行 / 径向）----------
+     * 模式的作用是**实例化约束**：单靠紧容差聚类发现不了「本该对齐」，
+     * 必须先认出「这一组是同一列里的层叠条」，才能断言它们应当共享左边缘。 */
+    /* 容器框本身不是「内容」，不参与模式识别 —— 否则四张尺寸全等的卡片
+     * 会互相被认成「一行」或「一列」（它们确实是完美网格，但那是容器网格，不是内容节奏）。 */
+    const frameNodeIds = new Set(frames.map(f => f.nodeId));
+    const visible = nodes.filter(n => !decoNodeSet.has(n.id) && !n.isBg && !frameNodeIds.has(n.id));
+    const patterns = { stacks: [], rows: [], radials: [] };
+    const sizeClose = (a, b, k) => Math.abs(a - b) <= k * Math.max(1, Math.max(a, b));
+    /* ★ 必须在**作用域内**扫描，不能全局排序：卡片 4 的 4 条 bar 与卡片 3 的方块
+     *   纵向交错，全局按 y 排序会被交错打断，永远凑不出这一列。 */
+    const scopeMembers = new Map();
+    for (const n of visible) {
+      const s = owner[n.id] || 'canvas';
+      if (!scopeMembers.has(s)) scopeMembers.set(s, []);
+      scopeMembers.get(s).push(n);
+    }
+    /* ★ 还必须按**尺寸分档**，再在档内找连续段。
+     *   实测教训：卡片 4 的 4 条 bar 之间插着两个 120×36 的反馈标签（y=706/714），
+     *   不分类就会把这一列切成 [n72,n70] 与 [n68,n66] 两段（各 2 个 < stackMin），
+     *   于是「左边缘本该对齐却散开 211.83px」完全不可见（stacks=0）。 */
+    const sizeClasses = (list, ax, ay) => {
+      const cls = [];
+      for (const n of list) {
+        const w = ax ? n.geomBox.w : n.geomBox.h;
+        const h = ay ? n.geomBox.h : n.geomBox.w;
+        let hit = null;
+        for (const c of cls) if (sizeClose(w, c.w, T.sizeTolK) && sizeClose(h, c.h, T.sizeTolK)) { hit = c; break; }
+        if (!hit) { hit = { w, h, items: [] }; cls.push(hit); }
+        hit.items.push(n);
+      }
+      return cls.filter(c => c.items.length >= T.stackMin);
+    };
+    const firstById = (a, b) => (a.id < b.id ? -1 : 1);
+    for (const sid of [...scopeMembers.keys()].sort((a, b) => (a < b ? -1 : 1))) {
+      const mem = scopeMembers.get(sid);
+      if (mem.length < T.stackMin) continue;
+      /* 堆叠：同尺寸类内、同一列里按 y 相接的成员 */
+      for (const c of sizeClasses(mem, true, true)) {
+        const sy = c.items.slice().sort((a, b) => (a.geomBox.y - b.geomBox.y) || firstById(a, b));
+        let run = [];
+        for (const n of sy) {
+          if (!run.length) { run = [n]; continue; }
+          const prev = run[run.length - 1];
+          const band = Math.min(R.right(n.geomBox), R.right(run[0].geomBox)) - Math.max(n.geomBox.x, run[0].geomBox.x);
+          const vGap = n.geomBox.y - R.bottom(prev.geomBox);
+          /* 带相交只要「有重叠」（不是 50%）：被打散后的列本来就只重叠 41%。
+           * 纵向相接允许小负值 —— 层叠 bar 本来就可能轻微压边（实测 vGap = 12 / 0 / 24）。 */
+          const contiguous = vGap > -0.5 * Math.min(n.geomBox.h, prev.geomBox.h)
+                          && vGap <= Math.max(40, 1.5 * Math.min(n.geomBox.h, prev.geomBox.h));
+          if (band > 0.15 * Math.min(n.geomBox.w, run[0].geomBox.w) && contiguous) run.push(n);
+          else { if (run.length >= T.stackMin) patterns.stacks.push(this._seq(run, 'y', T)); run = [n]; }
+        }
+        if (run.length >= T.stackMin) patterns.stacks.push(this._seq(run, 'y', T));
+      }
+      /* 成行：镜像逻辑 */
+      for (const c of sizeClasses(mem, true, true)) {
+        const sx = c.items.slice().sort((a, b) => (a.geomBox.x - b.geomBox.x) || firstById(a, b));
+        let rrow = [];
+        for (const n of sx) {
+          if (!rrow.length) { rrow = [n]; continue; }
+          const prev = rrow[rrow.length - 1];
+          const band = Math.min(R.bottom(n.geomBox), R.bottom(rrow[0].geomBox)) - Math.max(n.geomBox.y, rrow[0].geomBox.y);
+          const hGap = n.geomBox.x - R.right(prev.geomBox);
+          const contiguous = hGap > -0.5 * Math.min(n.geomBox.w, prev.geomBox.w)
+                          && hGap <= Math.max(40, 1.5 * Math.min(n.geomBox.w, prev.geomBox.w));
+          if (band > 0.15 * Math.min(n.geomBox.h, rrow[0].geomBox.h) && contiguous) rrow.push(n);
+          else { if (rrow.length >= T.stackMin) patterns.rows.push(this._seq(rrow, 'x', T)); rrow = [n]; }
+        }
+        if (rrow.length >= T.stackMin) patterns.rows.push(this._seq(rrow, 'x', T));
+      }
+    }
+    /* 径向：在一个作用域内，围绕该作用域中心的**同尺寸卫星**成员。
+     * ★ 三道限制缺一不可（实测：不加就出 6 个垃圾径向组、成员 20 个、半径极差 366）：
+     *   ① 只取「相对作用域很小」的成员 —— 否则卡片/大容器本身也进来；
+     *   ② **同尺寸**成组 —— 径向组的成员是同级卫星，尺寸应当一致。
+     *      这条是决定性的：卡片 2 里卫星(36px) 与 需求/App/FDE(56/50/48px) 到卡片中心的
+     *      距离相近，只按半径分档会把它们混成 8 个成员、理想步长降到 45°，反而判不出径向；
+     *      按尺寸分档后正好留下 6 个卫星（实测半径 127–154.8、角间隔 44.9°–70.0°）。
+     *   ③ 角度要大致铺满（任一步长 ≤ 1.4 × 理想步长）。 */
+    for (const sid of [...scopeMembers.keys()].sort((a, b) => (a < b ? -1 : 1))) {
+      const mem = scopeMembers.get(sid);
+      if (mem.length < T.radialMin) continue;
+      const f = frameById.get(sid);
+      const c = f ? { x: R.cx(f.box), y: R.cy(f.box) } : { x: R.cx(canvas), y: R.cy(canvas) };
+      const shortSide = f ? Math.min(f.box.w, f.box.h) : Math.min(canvas.w, canvas.h);
+      const maxDim = 0.35 * shortSide;
+      const cand = mem.filter(n => Math.max(n.geomBox.w, n.geomBox.h) <= maxDim
+                                && Math.hypot(R.cx(n.geomBox) - c.x, R.cy(n.geomBox) - c.y) > 1);
+      if (cand.length < T.radialMin) continue;
+      let best = null;
+      for (const anchor of cand) {
+        const dim = Math.max(anchor.geomBox.w, anchor.geomBox.h);
+        const grp0 = cand.filter(n => sizeClose(Math.max(n.geomBox.w, n.geomBox.h), dim, T.sizeTolK));
+        if (grp0.length < T.radialMin) continue;
+        const withR = grp0.map(n => ({ n, r: Math.hypot(R.cx(n.geomBox) - c.x, R.cy(n.geomBox) - c.y),
+                                       a: Math.atan2(R.cy(n.geomBox) - c.y, R.cx(n.geomBox) - c.x) }));
+        const rs = withR.map(w => w.r).slice().sort((a, b) => a - b);
+        const medR = rs[Math.floor(rs.length / 2)];
+        const grp = withR.filter(w => Math.abs(w.r - medR) <= T.radialRadiusTol * Math.max(1, medR));
+        if (grp.length < T.radialMin) continue;
+        /* ③ 角度铺满：任一步长不得超过 1.4 × 理想步长 */
+        const ideal = 360 / grp.length;
+        const aSorted = grp.map(g => g.a * 180 / Math.PI).sort((a, b) => a - b);
+        const st = [];
+        for (let i = 1; i < aSorted.length; i++) st.push(aSorted[i] - aSorted[i - 1]);
+        st.push(aSorted[0] + 360 - aSorted[aSorted.length - 1]);
+        if (Math.max(...st) > ideal * 1.4) continue;
+        if (!best || grp.length > best.grp.length) best = { grp, st, ideal, aSorted, medR };
+      }
+      if (!best) continue;
+      const g2 = best.grp.map(g => g.r);
+      patterns.radials.push({
+        scope: sid,
+        center: { x: r2(c.x), y: r2(c.y) },
+        members: best.grp.map(g => g.n.id).sort(),
+        radii: best.grp.map(g => r2(g.r)).sort((a, b) => a - b),
+        radiusSpread: r2(Math.max(...g2) - Math.min(...g2)),
+        angles: best.aSorted.map(a => r2(a)),
+        angleSteps: best.st.map(s => r2(s)),
+        idealStep: r2(best.ideal),
+        angleDevMax: r2(Math.max(...best.st.map(s => Math.abs(s - best.ideal))))
+      });
+    }
+
+    /* ---------- 7. 置信度（fail-closed 的依据）----------
+     * 置信度 = 结构证据的可判程度。它**不是**质量分，只回答「该不该信这一层」。 */
+    /* ★「断裂导引」只按**模式**判定，不按松容差聚类判定。
+     *   实测教训：星状图成员本来就不该轴对齐，按聚类判定会报出 24 条假断裂
+     *   （卡片 2 一条就占 10 条），而真正该报的「4 条 bar 左边缘散开 211.83px」
+     *   反而因为散得太开聚不成类而漏报。模式已经实例化了约束
+     *   （「这一组本该共享左边缘」），于是断裂 = 模式领边散开。 */
+    const patternBreaks = [];
+    let patternSpreadMax = 0;
+    for (const s of patterns.stacks.concat(patterns.rows)) {
+      const sp = (s.lead && s.lead.spread) || 0;
+      patternSpreadMax = Math.max(patternSpreadMax, sp);
+      if (sp > T.anchorTol * 4) patternBreaks.push({ axis: s.axis, key: s.lead.key, spread: sp, members: s.members });
+    }
+    let conf = 0.5;
+    if (nodes.length >= 6) conf += 0.15;
+    if (frames.length) conf += 0.15;
+    else conf -= 0.2;
+    if (R.area(canvas) > 0) conf += 0.1;
+    if (nodes.length && unowned / nodes.length < 0.5) conf += 0.1;
+    if (edges.length && attachments.length === 0) conf -= 0.15;   /* 有连线却一条都锚不上 = 几何可疑 */
+    conf = clamp(r2(conf), 0, 1);
+
+    const ont = {
+      ok: true, conf, notes, canvas,
+      frames, owner, guides, patterns, attachments, patternBreaks,
+      decorative: { nodes: decorativeNodes.sort(), edges: decorativeEdges.sort() },
+      degenerate, containViolations,
+      nodeById,
+      stats: {
+        nodes: nodes.length, edges: edges.length, frames: frames.length,
+        guides: guides.length, guideInfoBreaks: brokenGuides.length,
+        guideBreaks: patternBreaks.length, guideSpreadMax: r2(patternSpreadMax),
+        attachments: attachments.length, attachErrMax: r2(attachErrMax), badAnchors: badAnchors.length,
+        radials: patterns.radials.length, stacks: patterns.stacks.length, rows: patterns.rows.length,
+        decoNodes: decorativeNodes.length, decoEdges: decorativeEdges.length,
+        degenerate: degenerate.length,
+        containViolations: containViolations.length, containPx: r2(containPx), unowned
+      }
+    };
+    if (frames.length === 0) notes.push('未识别出任何容器框 → 容器契约不适用');
+    if (unowned) notes.push(`${unowned} 个节点不在任何容器框内（归画布）`);
+    if (conf < T.confMin) notes.push(`结构置信度 ${conf} < ${T.confMin} → 围栏按 fail-closed 收窄动作集`);
+    return ont;
+  },
+
+  _seq(run, axis, T) {
+    const vals = run.map(n => axis === 'y' ? n.geomBox.y : n.geomBox.x);
+    const gaps = [];
+    for (let i = 1; i < vals.length; i++) gaps.push(r2(vals[i] - vals[i - 1]));
+    const sizes = run.map(n => axis === 'y' ? n.geomBox.h : n.geomBox.w);
+    return {
+      axis, members: run.map(n => n.id).sort(),
+      lead: { key: axis === 'y' ? 'left' : 'top', spread: r2(Math.max(...run.map(n => axis === 'y' ? n.geomBox.x : n.geomBox.y)) - Math.min(...run.map(n => axis === 'y' ? n.geomBox.x : n.geomBox.y))) },
+      gaps,
+      gapCv: (() => { const m = gaps.reduce((a, b) => a + b, 0) / Math.max(1, gaps.length);
+                      const v = gaps.reduce((a, g) => a + (g - m) * (g - m), 0) / Math.max(1, gaps.length);
+                      return m > 0 ? r2(Math.sqrt(v) / m) : 0; })(),
+      sizeSpread: r2(Math.max(...sizes) - Math.min(...sizes))
+    };
+  },
+
+  /* --------------------------------------------------------------------------
+   * 不变量：全部是「越小越好」，且**单调可判**（用于硬门，不参与打分）
+   * ------------------------------------------------------------------------ */
+  invariants(ont, an) {
+    const s = (ont && ont.stats) || {};
+    let depth = 0;
+    const pairs = (an && an.raw && an.raw.collision && an.raw.collision.pairs) || [];
+    for (const p of pairs) depth = Math.max(depth, this.num(p.depth, 0));
+    const cv = (ont && ont.canvas) || R.mk(0, 0, 1920, 1080);
+    return {
+      containViolations: this.num(s.containViolations, 0),
+      containPx: this.num(s.containPx, 0),
+      guideBreaks: this.num(s.guideBreaks, 0),
+      guideSpreadMax: this.num(s.guideSpreadMax, 0),
+      guideInfoBreaks: this.num(s.guideInfoBreaks, 0),
+      attachErrMax: this.num(s.attachErrMax, 0),
+      badAnchors: this.num(s.badAnchors, 0),
+      edgeDegeneracy: this.num(s.degenerate, 0),
+      decoNodes: this.num(s.decoNodes, 0),
+      decoEdges: this.num(s.decoEdges, 0),
+      confidence: this.num(ont && ont.conf, 0),
+      /* ★ 位移上限：max(1.5 × 当前最大重叠量, 0.06 × 画布短边)。
+       * 实测依据：为消除 7.8px 重叠曾被位移 214px（27 倍）。本式给出 max(11.7, 64.8) = 64.8px。 */
+      dMax: r2(Math.max(this.DEF.displaceK * depth, this.DEF.displaceFrac * Math.min(cv.w || 1920, cv.h || 1080)))
+    };
+  },
+
+  /* --------------------------------------------------------------------------
+   * 规则表：声明式。每条规则只回答「哪些动作会破坏本图的结构」。
+   * effect 形态：
+   *   forbid: ['issueType|strategy', ...]   禁止这批动作
+   *   force:  { 'strategy_<type>': key }    强制改选（沿决策层已排好的顺位）
+   *   gate:   { safeAll:false }             收紧后再进几何引擎
+   *   note:   触发说明（会进决策台账，可审计）
+   * kind='work' 的规则不产生动作，只报告缺口（供后续实现新策略）
+   * ------------------------------------------------------------------------ */
+  RULES: [
+    {
+      id: 'displace_cap', cn: '位移上限', severity: 'high', kind: 'cap',
+      /* 触发：任何重叠问题都存在 —— 上限本身由几何引擎在 separation() 里执行 */
+      when(ont, an, T) {
+        const pairs = (an && an.raw && an.raw.collision && an.raw.collision.pairs) || [];
+        if (!pairs.length) return null;
+        let depth = 0, worst = null;
+        for (const p of pairs) if (Ontology.num(p.depth, 0) > depth) { depth = Ontology.num(p.depth, 0); worst = p; }
+        const cv = ont.canvas || R.mk(0, 0, 1920, 1080);
+        const dMax = Math.max(Ontology.DEF.displaceK * depth, Ontology.DEF.displaceFrac * Math.min(cv.w || 1920, cv.h || 1080));
+        /* 只在「存在被过度修正的风险」时提示：候选位移若远超重叠量级 */
+        const need = worst && worst.aRef ? Math.max(worst.aRef.geomBox.w, worst.aRef.geomBox.h) : 0;
+        return { depth: r2(depth), dMax: r2(dMax), need: r2(need) };
+      },
+      reason(e) { return `最大重叠 ${e.depth}px → 位移上限 ${e.dMax}px（实测曾有 7.8px 重叠被位移 214px）`; }
+    },
+    {
+      id: 'attach_guard', cn: '附着跟随围栏', severity: 'high', kind: 'forbid',
+      /* 触发：**本图**存在「锚定形状被带连接体的策略移动」的风险。
+       * 现有引擎移动形状时只带标签（applyTranslate 只跟随 n.labels），**不搬连接体**，
+       * 实测把卡片 3 的箭头错位从 21.5/42.01px 恶化到 36/72px。
+       * 因此在这些形状被移动类策略命中时，禁止该策略 —— 直到附着跟随真正实现。 */
+      when(ont, an, T) {
+        if (!ont.attachments.length) return null;
+        const anchored = new Set(ont.attachments.map(a => a.nodeId));
+        const hits = [];
+        for (const type of ['spacing', 'overlap']) {
+          for (const it of ((an && an.issues) || [])) {
+            if (it.type !== type) continue;
+            const inter = (it.targets || []).filter(t => anchored.has(t));
+            if (inter.length) hits.push({ type, targets: inter });
+          }
+        }
+        if (!hits.length) return null;
+        const byType = {};
+        for (const h of hits) byType[h.type] = (byType[h.type] || 0) + 1;
+        return { byType, anchored: anchored.size };
+      },
+      forbid: () => ['spacing|distribute_equal', 'spacing|distribute_weighted', 'spacing|grow_spacing', 'overlap|move_apart'],
+      reason(e) { return `「${Object.keys(e.byType).join('/')}」将移动 ${e.anchored} 个带连接体的形状；`
+                       + `而 applyTranslate 不搬连接体（实测箭头错位 21.5→36 / 42.01→72）→ 禁止移动类策略`; }
+    },
+    {
+      id: 'deco_edge_guard', cn: '装饰边保护', severity: 'high', kind: 'forbid',
+      /* 触发：edge_crossing 的候选里含装饰路径（透明度 ≤ 0.3 / 淡色波纹）。
+       * 实测：orthogonal_reroute 把两条 1942/1957px 样条压成 y=540 的贯穿直线，
+       * 代价换回 +5.4 分 —— 全轮 64% 的增益来自这个破坏性动作。 */
+      when(ont, an, T) {
+        if (!ont.decorative.edges.length) return null;
+        const deco = new Set(ont.decorative.edges);
+        for (const it of ((an && an.issues) || [])) {
+          if (it.type !== 'edge_crossing') continue;
+          const inter = (it.targets || []).filter(t => deco.has(t));
+          if (inter.length) return { edges: inter };
+        }
+        return null;
+      },
+      forbid: () => ['edge_crossing|orthogonal_reroute'],
+      reason(e) { return `候选含 ${e.edges.length} 条装饰路径（透明度 ≤ ${Ontology.DEF.decoOpacity}）→ 禁止重路由（会把装饰样条压成直线）`; }
+    },
+    {
+      id: 'contain_guard', cn: '容器契约围栏', severity: 'medium', kind: 'forbid',
+      /* 触发：已有元素越出容器（实测卡片 4 两条 bar 整条在外、卡片 2 溢出 429px）。
+       * 在这种图上做整体重排/画布重平衡风险最高 —— 先把动作集收窄到局部修正。 */
+      when(ont, an, T) {
+        const bad = ont.containViolations;
+        if (!bad.length) return null;
+        return { count: bad.length, px: Ontology.num(ont.stats.containPx, 0),
+                 worst: bad[0] ? `${bad[0].describe} 越出 ${bad[0].side} ${bad[0].overflow}px` : '' };
+      },
+      forbid: () => ['overlap|global_relayout', 'canvas_margin|rebalance_canvas'],
+      gate: () => ({ safeAll: false }),
+      reason(e) { return `${e.count} 个元素越出所属容器（合计 ${e.px}px，最严重：${e.worst}）→ 禁止整体重排/画布重平衡，且不触碰 critical 项`; }
+    },
+    {
+      id: 'pattern_gap', cn: '节奏缺口（仅报告）', severity: 'low', kind: 'work',
+      /* 只报告，不动作：现有引擎没有「按模式重排」的策略。
+       * 这条规则的作用是把缺口记进台账，为后续新增策略提供依据。 */
+      when(ont, an, T) {
+        const bad = [];
+        for (const seq of ont.patterns.stacks.concat(ont.patterns.rows)) {
+          /* 领边散开 = 本该对齐却没对齐；只在超过锚点容差时报 */
+          if (seq.lead && seq.lead.spread > T.anchorTol * 4) bad.push({ axis: seq.axis, kind: 'lead', spread: seq.lead.spread, n: seq.members.length });
+          if (seq.gapCv > 0.15 && seq.gaps.some(g => g > 8)) bad.push({ axis: seq.axis, kind: 'gap', cv: seq.gapCv, n: seq.members.length });
+        }
+        for (const r of ont.patterns.radials) {
+          if (r.angleDevMax > r.idealStep * 0.2) bad.push({ axis: 'radial', kind: 'angle', dev: r.angleDevMax, ideal: r.idealStep, n: r.members.length });
+        }
+        return bad.length ? { count: bad.length, first: bad[0] } : null;
+      },
+      reason(e) { return `${e.count} 处模式节奏缺口（${e.first.axis}/${e.first.kind}），现有策略集无法修复 → 仅记录`; }
+    },
+    {
+      id: 'low_conf', cn: '低置信度收窄', severity: 'medium', kind: 'forge',
+      when(ont, an, T) { return ont.conf < T.confMin ? { conf: ont.conf } : null; },
+      forbid: () => ['overlap|global_relayout'],
+      gate: () => ({ safeAll: false }),
+      reason(e) { return `结构置信度 ${e.conf} 低于下限 → fail-closed：禁止整体重排、不触碰 critical 项`; }
+    }
+  ],
+
+  /* --------------------------------------------------------------------------
+   * 围栏：把本体+规则施加到 Laya 的决策结果上
+   *
+   * 设计对齐既有架构：05_laya.js 已有的后置门禁（should_relayout 为假时从 ranks 里
+   * 摘掉 global_relayout）就是同一形态。本函数沿用「改 applied、留痕迹」的做法，
+   * 因此几何引擎（Geo.plan 读 dec.applied['strategy_<type>'].choice）**无需改动**。
+   *
+   * 副作用是刻意的：它只**收窄**动作集，绝不新增动作 —— 这是 fail-closed 的实现方式。
+   * ------------------------------------------------------------------------ */
+  fence(ir, an, applied, gate, o) {
+    const o2 = o || {};
+    const T = { confMin: this.num(o2.ontConfMin, this.DEF.confMin) };
+    /* ★ 默认**顾问模式**（advisory）：只报告规则命中，不改动作集。
+     * 为什么默认不强制 —— 实测定价（.svgbuild/rule_price.cjs、palantir_value.cjs）：
+     *   · 36 份语料：强制围栏总分代价 −22.35，而不变量改善只有 1 份样本的 6.5px；
+     *     逐规则定价显示 100% 的代价来自 attach_guard，其余规则代价为 0。
+     *   · 目标文件 palantir：强制围栏代价 −11.00 分，且**结构不变量全部变差**
+     *     （containPx 128→253.71、guideSpreadMax 183→211.83、attachErrMax 36→42.01）——
+     *     因为它把 5 个被接受的动作全挡掉了（0 accepted），而正是这些动作在修复几何
+     *     （开围栏时输出确实优于输入：253.71→128、211.83→183、42.01→36）。
+     * 结论：「美化在本图上会破坏结构」这个前提在**当前代码 + 本文件**上不成立。
+     * 因此强制门必须逐条定价后再开，默认只做事实与规则的呈现。
+     * 开启方式：sopt.ontEnforce = true。 */
+    const enforce = o2.ontEnforce === true;
+    const trace = { ok: true, mode: enforce ? 'enforce' : 'advisory', conf: 0, fired: [], blocked: [],
+                    gates: [], notes: [], ont: null, inv: null };
+    if (o2.ontOff) { trace.notes.push('本体围栏被显式关闭（ontOff）'); return trace; }
+    let ont;
+    try { ont = this.build(ir, an, o2); }
+    catch (e) { trace.ok = false; trace.notes.push('本体构建异常 → 围栏整体放行（不因本体报错而阻断修复）：' + (e && e.message ? e.message : String(e))); return trace; }
+    if (!ont.ok) { trace.ok = false; trace.notes.push('本体不可用 → 围栏整体放行'); return trace; }
+    trace.ont = ont;
+    trace.conf = ont.conf;
+    const inv = this.invariants(ont, an);
+    trace.inv = inv;
+    for (const n of ont.notes) trace.notes.push(n);
+
+    const gateOut = Object.assign({}, gate || {});
+    const forbid = new Set();
+    /* 逐规则消融：o.ontOffRules = ['attach_guard', ...] 用于定标，
+     * 只有**代价与收益都量过**的规则才允许留在生效集里。 */
+    const offRules = Array.isArray(o2.ontOffRules) ? new Set(o2.ontOffRules) : new Set();
+    for (const R0 of this.RULES) {
+      if (offRules.has(R0.id)) { trace.notes.push(`规则 ${R0.id} 被消融关闭`); continue; }
+      let ev = null;
+      try { ev = R0.when(ont, an, T); } catch (e) { ev = null; }
+      if (!ev) continue;
+      const rec = { id: R0.id, cn: R0.cn, kind: R0.kind, severity: R0.severity,
+                    reason: (() => { try { return R0.reason ? R0.reason(ev) : ''; } catch (e) { return ''; } })(),
+                    effect: ev };
+      if (R0.forbid && enforce) for (const k of R0.forbid(ev)) { forbid.add(k); rec.blocked = (rec.blocked || []).concat(k); }
+      if (R0.gate && enforce) { const g = R0.gate(ev); Object.assign(gateOut, g); trace.gates.push({ id: R0.id, set: g }); }
+      if (R0.kind === 'cap') rec.cap = { dMax: inv.dMax };
+      trace.fired.push(rec);
+    }
+    /* 位移上限：几何引擎自行读取（见 06_geometry.js separation 的本体段落）。
+     * 这里把它写进 gate，便于台账与测试断言。 */
+    gateOut.dMax = inv.dMax;
+    gateOut.ontology = { conf: ont.conf, stats: ont.stats };
+
+    /* ---- 施加：收窄 ranks，并让 choice 沿顺位落回合法项 ---- */
+    if (enforce && forbid.size) {
+      for (const qid of Object.keys(applied)) {
+        if (qid.indexOf('strategy_') !== 0) continue;
+        const rec = applied[qid];
+        if (!rec || !rec.ranks) continue;
+        const before = rec.ranks.length;
+        rec.ranks = rec.ranks.filter(x => !forbid.has(qid.replace('strategy_', '') + '|' + x.key));
+        if (rec.ranks.length === before) continue;
+        const type = qid.replace('strategy_', '');
+        const legal = rec.ranks.map(x => x.key);
+        trace.blocked.push({ qid, type, removed: before - rec.ranks.length, legal });
+        if (!legal.length) {
+          /* 全被禁 → 该类本轮放弃（几何引擎看到空 ranks 会走 skipped） */
+          rec.choice = null;
+          rec.fence = { blocked: true, rule: trace.fired.filter(r => r.blocked).map(r => r.id) };
+          continue;
+        }
+        if (legal.indexOf(rec.choice) < 0) {
+          const old = rec.choice;
+          rec.choice = legal[0];
+          rec.fence = { blocked: true, from: old, to: rec.choice, source: rec.source, rule: trace.fired.filter(r => r.blocked).map(r => r.id) };
+          /* 若原选择来自模型/mix，被围栏否决后回退来源必须如实记为 rule */
+          rec.source = 'fence';
+        } else {
+          rec.fence = { blocked: false, rule: trace.fired.filter(r => r.blocked).map(r => r.id) };
+        }
+      }
+    }
+    /* ---- 通用归一：choice 必须仍然落在 ranks 内 ----
+     * 覆盖既有后置门禁的缺口：05_laya 只把 global_relayout 从 ranks 里摘掉，
+     * 却不改 choice —— 于是「不该整体重排」的图上仍会按 global_relayout 出 op。
+     * 顺带保证本围栏的替换结果不会指向一个已被禁掉的策略。
+     * 用 o.ontNormalize === false 可单独消融本步（定标用）。
+     * 与强制门一同挂在 enforce 下：顾问模式保证**完全不改动作集**。 */
+    if (enforce && o2.ontNormalize !== false) {
+      for (const qid of Object.keys(applied)) {
+        if (qid.indexOf('strategy_') !== 0) continue;
+        const rec = applied[qid];
+        if (!rec || !rec.ranks || !rec.ranks.length || rec.choice == null) continue;
+        if (rec.ranks.some(x => x.key === rec.choice)) continue;
+        const old = rec.choice;
+        rec.choice = rec.ranks[0].key;
+        rec.fence = Object.assign({}, rec.fence || {}, { normalized: true, from: old, to: rec.choice });
+        if (rec.source === 'rule') rec.source = 'fence';
+        trace.blocked.push({ qid, type: qid.replace('strategy_', ''), removed: 0,
+                            legal: rec.ranks.map(x => x.key), normalizedFrom: old });
+      }
+    }
+    if (!trace.blocked.length) trace.notes.push('围栏未触任何动作（本图未命中规则）');
+    trace.gate = gateOut;
+    return trace;
+  },
+
+  /* 人类可读摘要（台账/UI 用） */
+  summary(trace) {
+    if (!trace || !trace.ok) return '本体围栏：不可用（已放行）';
+    const s = (trace.ont && trace.ont.stats) || {};
+    const parts = [`置信度 ${trace.conf}`,
+      `容器 ${s.frames}`, `导引 ${s.guides}（断裂 ${s.guideBreaks}）`,
+      `附着 ${s.attachments}（错位 ${s.badAnchors}，最大 ${s.attachErrMax}px）`,
+      `径向组 ${s.radials}`, `装饰 ${s.decoNodes}/${s.decoEdges}`, `退化 ${s.degenerate}`,
+      `越界 ${s.containViolations}（${s.containPx}px）`, `位移上限 ${trace.gate ? trace.gate.dMax : '—'}px`];
+    return '本体围栏：' + parts.join(' · ');
   }
 };
 
@@ -4463,8 +6157,9 @@ const Pipeline = {
    * 过滤），否则高严重度的遮挡反而被漏修。这里在优化轮之前，用 z-order 提升
    * 把被盖文字直接提到遮挡形状之上渲染（视觉位置由 CTM 补偿保持不变），保证可见。
    * 循环收敛：每轮消解后重建 IR 复检，直到无遮挡或连续两轮无进展（guard）。 */
-  _resolveOcclusions(rt, sopt) {
+  _resolveOcclusions(rt, sopt, out) {
     const applied = [];
+    const errors = (out && out.errors) || null;
     let guard = 0;
     for (;;) {
       if (guard++ > 24) break;
@@ -4479,7 +6174,10 @@ const Pipeline = {
         const op = Geo.opRaiseText(ir, an, oc, 'raise_text', null);
         if (op && typeof op.apply === 'function') {
           try { op.apply(); applied.push(op.label || oc.textDesc); did = true; }
-          catch (e) { /* 单个失败不影响其余 */ }
+          catch (e) {
+            /* 单个失败不影响其余；但**不再无声**（F10）：正确性缺陷这条路径的失败必须可见 */
+            if (errors) errors.push({ op: op.label || oc.textDesc, err: e && e.message ? e.message : String(e) });
+          }
         }
       }
       if (!did) break;
@@ -4487,9 +6185,83 @@ const Pipeline = {
     return applied;
   },
 
+  /* ---------- F1：按单元尝试提交 ----------
+   * 应用一组 op（每个单元内部仍然原子），然后走完整条校验链：
+   *   应用 → 重建 IR → 画布收尾 → 重建 IR/分析 → op 级门
+   * 成功时**保持已应用**并返回新的分析态（供调用方作为后续单元的比较基线）；
+   * 失败时返回 ok:false，由调用方负责回滚到它自己的快照 —— 本函数不做回滚，
+   * 因为慢路径里每个单元的回滚点是不同的。
+   * 顺带修掉一个既有缺陷：旧代码 `Patch.applyAll(batch)` 丢弃了返回的 errors，
+   * 于是 `op.apply` 内部的异常被静默吞掉，「apply 抛错」这条理由实际只可能来自
+   * IR/Analyzer 抛错。这里改为显式检查 errors 并作为失败理由上报。 */
+  _tryUnits(rt, baseAn, units, o, plan0) {
+    const tails = [];
+    try {
+      for (const u of units) {
+        const app = Patch.applyAll(u);
+        if (app.errors.length) {
+          return { ok: false, gain: 0, tails, errors: app.errors,
+                   reasons: app.errors.map(e => `apply 抛错: ${e.op}（${e.err}）`) };
+        }
+      }
+      /* 批内画布收尾：为「撑大内容盒」的批准备对称留白（语义同旧版 210-219） */
+      const iT = IR.build(rt, o.sopt);
+      const aT = iT.ok ? Analyzer.run(iT, o.sopt) : null;
+      if (aT) {
+        const t = Geo.canvasTail(iT, aT, plan0 ? plan0.style : null, o.canvasPad);
+        if (t.ops.length) {
+          const ta = Patch.applyAll(t.ops);
+          tails.push({ grow: t.grow, canvas: t.canvas, dx: t.dx, dy: t.dy, n: t.ops.length,
+                       applied: ta.applied.length, errors: ta.errors });
+          if (ta.errors.length) {
+            return { ok: false, gain: 0, tails, errors: ta.errors,
+                     reasons: ta.errors.map(e => `画布收尾抛错: ${e.op}（${e.err}）`) };
+          }
+        }
+      }
+      const i2 = IR.build(rt, o.sopt);
+      if (!i2.ok) return { ok: false, gain: 0, tails, reasons: ['应用后 IR 构建失败'] };
+      const a2 = Analyzer.run(i2, o.sopt);
+      const c = Validator.checkOp(baseAn, a2);
+      return { ok: c.ok, ir: i2, an: a2, gain: c.gain, reasons: c.reasons, tails };
+    } catch (e) {
+      return { ok: false, gain: 0, tails, reasons: ['apply 抛错: ' + (e && e.message ? e.message : String(e))] };
+    }
+  },
+
+  /* 把一个 batch 按 item 拆成单元。itemKey 在 06 的 claim() 里就已挂好
+   * （`cur.type + '|' + targets.join(',')`），这里只是把它提升为提交单元。 */
+  _groupByItem(ops) {
+    const map = new Map(), order = [];
+    for (const op of ops) {
+      const k = op.itemKey || ('#' + (op.label || '') + '|' + (op.kind || ''));
+      if (!map.has(k)) { map.set(k, []); order.push(k); }
+      map.get(k).push(op);
+    }
+    return order.map(k => map.get(k));
+  },
+
   /* 完整自修复闭环 */
   async beautify(rt, svgText, opts) {
     const o = Object.assign({ strategy: 'rule', temp: 3, maxRounds: 4, sopt: {}, dryRun: false }, opts || {});
+    /* ★F5 区域命名：beautify 收到的 svgText 是**作者原始文档** —— 全部 11 个调用点
+     * （ui.html / dev.html / 各 tests / sweep）传的都是 s.svg 或 smp.svg。
+     * 这是唯一可靠的设计意图来源：svgcanvas 的 identifyLayers() 会把非 layer 元素
+     * 重挂进新建的 g.layer，注释节点留在 #svgcontent 原位，于是「注释紧邻区元素」
+     * 这层关系在载入后**永久丢失**（实测 9 个区的 name 全为 ''）。
+     * 之所以挂在 o.sopt 上、而不是记在 Runtime 上：Pipeline 内部的 rt.load(preSvg/uSvg)
+     * 回滚只换 DOM 不换这个字段，因此**全程（含每次 _tryUnits 重算）区域名恒定**。
+     * 若改记在 Runtime 上，第一次回滚就会用「导出串」（注释已丢）覆盖掉原文，
+     * hierarchy 维度会随重算抖动，评分失去幂等性。 */
+    if (typeof svgText === 'string' && svgText.length) o.sopt = Object.assign({}, o.sopt, { svgText });
+    /* ★F11 根因修复（配套）：把**作者画布**尺寸一并钉进 sopt，理由见 03_ir.js 里 isBg 的注释。
+     * 此刻 DOM 刚载入、canvasTail 还没跑过，读到的就是作者尺寸。 */
+    {
+      const aw = parseFloat(rt.canvas && rt.canvas.contentW), ah = parseFloat(rt.canvas && rt.canvas.contentH);
+      if (isFinite(aw) && aw > 0 && isFinite(ah) && ah > 0) {
+        o.sopt = Object.assign({}, o.sopt, { authoredCanvas: { w: aw, h: ah } });
+      }
+    }
     const t0 = nowMs();
     let load = rt.load(svgText);
     if (!load.ok) return { ok: false, err: load.err || '载入失败' };
@@ -4510,18 +6282,26 @@ const Pipeline = {
     };
     const ledger = [];
     let lastPlan = null, lastDec = null;
-    const proposed = [];
+    const proposed = [];        /* dryRun 的预览清单（旧版构造后未返回，F10 已补进返回值） */
+    /* ★ F2：跨轮失败记忆。gateKey → 已在多少轮中失败。
+     * 为什么不用「永久黑名单」：元素在后续轮次被释放后，原先不可行的策略会重新可行
+     * （正是下面重规划那段注释所说的理由）。永久拉黑会挡掉这种情形；
+     * 只做「重试次数上限」既避免无限重复，又保留状态变化后的第二次机会。
+     * 实测动机：本体图轮 2 把轮 1 的 9 条失败**逐条重试**后再全部淘汰，整轮空转。 */
+    const attempts = new Map();
+    const maxAttempts = o.maxAttempts == null ? 2 : o.maxAttempts;
 
     if (o.dryRun) {
       const pv = await this.preview(rt, ir, an, o.strategy, o.temp, o.sopt);
       lastPlan = pv.pl; lastDec = pv.dec;
       for (const op of pv.pl.ops) proposed.push({ target: op.label, strategy: op.strategy, issue: op.issueType, why: op.why, preview: op.preview });
-      return { ok: true, dryRun: true, before, after: before, ledger, finalSvg: beforeSvg, ops: pv.pl, dec: pv.dec, skipped: pv.pl.skipped, ms: r2(nowMs() - t0) };
+      return { ok: true, dryRun: true, before, after: before, ledger, finalSvg: beforeSvg, ops: pv.pl, proposed, dec: pv.dec, skipped: pv.pl.skipped, ms: r2(nowMs() - t0) };
     }
 
     /* 确定性遮挡消解预通行：文字被不透明形状遮挡是正确性缺陷，必须在优化轮之前强制消解，
      * 否则严重遮挡会被策略优化器的 critical 门漏掉（见 06 plan() 过滤）。 */
-    const occFixed = this._resolveOcclusions(rt, o.sopt);
+    const occOut = { errors: [] };
+    const occFixed = this._resolveOcclusions(rt, o.sopt, occOut);
     if (occFixed.length) {
       ir = IR.build(rt, o.sopt);
       an = Analyzer.run(ir, o.sopt);
@@ -4532,9 +6312,15 @@ const Pipeline = {
 
       const roundStartSvg = rt.exportString();
       const roundStart = { score: an.score, metrics: Object.assign({}, an.metrics), issues: an.issues.length };
-      const reject = [];          /* 本轮 op 级门淘汰的 itemKey */
+      const reject = [];          /* 本轮 op 级门淘汰的 gateKey（立即抑制，语义同旧版） */
+      const rejectItems = [];     /* ★ F1：本轮按 item 提交失败的 itemKey（item 级归因，本轮内不再产出） */
+      /* ★ F1：本轮子集搜索的校验预算（每次 _tryUnits = 一次打分）。
+       * 二分搜索找「一个坏 op」约需 2·log2(n) 次；整批全坏时最坏 2n−1 次。
+       * 20 次足以覆盖 n≈24 的常见规模，同时把最坏耗时钉住（本体图整轮约 0.7s）。 */
+      const budget = { left: o.unitBudget == null ? 20 : o.unitBudget };
       const steps = [];           /* 逐批台账 */
       const acceptedTails = [];   /* 已随批生效的画布收尾 */
+      const committedOps = [];    /* ★ F10：真正生效的 op（rec.appliedOps 的来源） */
       let dec0 = null, plan0 = null, firstPlan = null;
       let guard = 0;
 
@@ -4546,7 +6332,13 @@ const Pipeline = {
        * （元素释放后，原先被 owner 占用的策略重新可行，所以必须重规划而不是跳过）。
        * 决策只跑一次（dec0），重规划复用同一份决策 → 符合 §21「一次前向回答全部问题」。 */
       while (guard++ < this.MAX_STEPS) {
-        const sopt2 = Object.assign({}, o.sopt, { reject });
+        /* ★ F2：有效黑名单 = 本轮已失败者 ∪ 跨轮已达重试上限者 */
+        const capped = [];
+        if (attempts.size) { for (const kv of attempts) { if (kv[1] >= maxAttempts) capped.push(kv[0]); } }
+        const sopt2 = Object.assign({}, o.sopt, {
+          reject: capped.length ? reject.concat(capped) : reject,
+          rejectItems
+        });
         const pv = await this.preview(rt, ir, an, o.strategy, o.temp, sopt2);
         if (!dec0) { dec0 = pv.dec; plan0 = pv.pl; firstPlan = pv.pl; }
         if (!pv.pl.ops.length) break;
@@ -4565,57 +6357,135 @@ const Pipeline = {
          * 理由一：rebalance_canvas / distribute_equal 是原子组 op —— 只平移一半元素
          *         会让留白更不对称，逐 op 判定必然把整组拆散（实测 canvas 97.9→97.9 归零）。
          * 理由二：撑大内容盒的 op（grow_to_min / resize_container / wrap_text）必须把
-         *         「画布收尾」算进同一次校验，否则单看 op 就是 canvas 维度劣化 → 误杀。 */
+         *         「画布收尾」算进同一次校验，否则单看 op 就是 canvas 维度劣化 → 误杀。
+         *
+         * ★ F1：把「原子性」从隐含假设改成**显式分级**（Geo.ATOMIC）。
+         * 上面两条理由只对**天然原子**的类型成立（整幅平移 / 整行等距 / 整组重路由）；
+         * text_overflow / style_inconsistency / tiny_element 等是**逐 item 独立**的，
+         * 整类捆绑会让「9 个 item 对、1 个 item 错」退化成整类丢弃 ——
+         * 实测：move_text(10 op) 与 normalize_style(24 op) 被整类淘汰，两类问题一条没修。
+         * 因此：原子类型维持整批提交；非原子类型在整批失败后**按 item 增量提交**，
+         * 每个 item 内部仍然原子，每个单元仍然过同一个 op 级门 —— 只会「少丢」，不会「多改」。 */
         const first = opsLive[0];
         const gateKey = first.gateKey || ('#' + (first.strategy || '') + '|' + (first.label || ''));
         const batch = opsLive.filter(o => (o.gateKey || gateKey) === gateKey);
         const preSvg = rt.exportString();
         const preAn = an;
-        const tailInfos = [];
-        let a2 = null;
-        try {
-          Patch.applyAll(batch);
-          /* 批内画布收尾：为「撑大内容盒」的批准备对称留白 */
-          const iT = IR.build(rt, o.sopt);
-          const aT = iT.ok ? Analyzer.run(iT, o.sopt) : null;
-          if (aT) {
-            const t = Geo.canvasTail(iT, aT, plan0 ? plan0.style : null, o.canvasPad);
-            if (t.ops.length) {
-              const ta = Patch.applyAll(t.ops);
-              tailInfos.push({ grow: t.grow, canvas: t.canvas, dx: t.dx, dy: t.dy, n: t.ops.length, applied: ta.applied.length, errors: ta.errors });
-            }
-          }
-          const i2 = IR.build(rt, o.sopt);
-          a2 = i2.ok ? Analyzer.run(i2, o.sopt) : null;
-          if (a2) {
-            const c = Validator.checkOp(preAn, a2);
-            const row = {
-              i: steps.length + 1, kind: batch.map(o => o.kind).join('+'), strategy: first.strategy, issue: first.issueType,
-              target: batch.map(o => o.label || '').join(' ; '), itemKey: gateKey, why: first.why || '',
-              nOps: batch.length, tail: tailInfos, before: preAn.score, after: a2.score, gain: c.gain, accept: c.ok
-            };
-            if (c.ok) { ir = i2; an = a2; acceptedTails.push(...tailInfos); steps.push(row); continue; }
-            row.reasons = c.reasons; steps.push(row);
-          } else {
-            steps.push({ i: steps.length + 1, strategy: first.strategy, issue: first.issueType,
-                         target: first.label || '', itemKey: gateKey, nOps: batch.length,
-                         accept: false, reasons: ['应用后 IR 构建/分析失败'] });
-          }
-        } catch (e) {
-          steps.push({ i: steps.length + 1, strategy: first.strategy, issue: first.issueType,
-                       target: first.label || '', itemKey: gateKey, nOps: batch.length,
-                       accept: false, reasons: ['apply 抛错: ' + (e && e.message)] });
+        const mode = (typeof Geo.atomicity === 'function') ? Geo.atomicity(first.issueType) : 'whole';
+        const mkRow = extra => Object.assign({
+          i: steps.length + 1, kind: batch.map(x => x.kind).join('+'), strategy: first.strategy,
+          issue: first.issueType, target: batch.map(x => x.label || '').join(' ; '),
+          itemKey: gateKey, why: first.why || '', nOps: batch.length, before: preAn.score
+        }, extra);
+
+        /* 快路径：整批一次提交（保持既有原子语义，绝大多数情况走这条） */
+        const whole = this._tryUnits(rt, preAn, [batch], o, plan0);
+        if (whole.ok) {
+          ir = whole.ir; an = whole.an;
+          acceptedTails.push(...whole.tails);
+          committedOps.push(...batch);
+          steps.push(mkRow({ tail: whole.tails, after: an.score, gain: whole.gain, accept: true, mode: 'whole' }));
+          continue;
         }
-        /* 回滚到本批之前（DOM 被整体替换，必须重建 IR/分析态），并屏蔽该条 issue */
+        /* 整批失败：先恢复到 preSvg（慢路径必须从干净态出发），再决定后续策略 */
         rt.load(preSvg);
         ir = IR.build(rt, o.sopt);
         an = Analyzer.run(ir, o.sopt);
+        /* 失败批次的「若提交」分数仍记录进台账（沿用旧版语义，供人工判读） */
+        const failAfter = whole.an ? whole.an.score : preAn.score;
+
+        /* 非原子类型 + 批次够大 + 还有预算 → item 级增量提交；否则维持旧行为 */
+        const canSplit = mode !== 'whole' && batch.length >= 3 && budget.left > 0;
+        if (!canSplit) {
+          attempts.set(gateKey, (attempts.get(gateKey) || 0) + 1);
+          reject.push(gateKey);
+          steps.push(mkRow({ tail: whole.tails, after: failAfter, gain: whole.gain,
+                             accept: false, mode, reasons: whole.reasons }));
+          continue;
+        }
+
+        /* ★F1 强化：整批失败后不再只做「逐 item 提交」，而是**二分搜索可用子集**。
+         * 为什么逐 item 不够（实测 tests/diag_batch.cjs + 本体图台账）：
+         * normalize_style 的 24 个 op 里只有**第 7 个**有害 —— 它把一段文字的字号 16→18px，
+         * 于是文字探到文档序更靠后的不透明容器下 → occlusion 由 0 变 2 →
+         * occlusion.density = 0.5 恰好等于 collSat → metrics.collision 从 96 塌到 0
+         * → **整批 24 op 被一并否决**。此时逐 item 提交完全无效：单个字号改动自身的
+         * Δ≈0，而 op 级门要求 Δ>0 严格提升 → 24 个单元全数落空 → 「23 个中性 op + 1 个毒 op」
+         * 的批次一条也修不成。这是「一键美化对该图几乎不动」的直接原因。
+         * 二分把「整批过/不过」扩展成「闭区间内找一个能过门的子集」：
+         *   try(S) 通过 → 整段提交；|S|=1 仍不过 → 记为坏单元；
+         *   否则对半拆分递归。毒 op 数为 b 时约需 O(b·log(n/b)) 次校验。
+         * ★ 安全性（为什么不会让结果变差）：每一次提交都必须先过**同一个 op 级门**
+         *   （_tryUnits → applyAll → IR/Analyzer 重算 → Validator.checkOp），
+         *   并且每个单元的 `gain` 都是相对**当前已提交状态**测得的。
+         *   因此本算法只可能「额外提交已被证明有提升的子集」，不可能引入劣化 ——
+         *   最坏情况是什么都不提交，与旧行为等价。 */
+        const units = this._groupByItem(batch);
+        const unitRows = [];
+        const committed = [];
+        let curAn = preAn;
+        /* 二分搜索作用在**单元（item）**上，不是裸 op 上 —— 保证同一 item 的多个 op
+         * 永远整体提交/整体否决，不会把「改尺寸」和它配套的「文字归位」拆开。
+         * sub.length === 1 时即退化为原来的逐 item 提交，故本算法**严格包含**旧行为。 */
+        const trySub = (sub, depth) => {
+          if (!sub.length) return;
+          const flat = sub.length === 1 ? sub[0] : [].concat.apply([], sub);
+          if (budget.left <= 0) {
+            unitRows.push({ itemKey: sub[0][0].itemKey || '', nUnits: sub.length, skipped: '单元预算耗尽' });
+            return;
+          }
+          budget.left--;
+          const sSvg = rt.exportString();
+          const r = this._tryUnits(rt, curAn, [flat], o, plan0);
+          if (r.ok) {
+            committed.push(...flat); curAn = r.an; acceptedTails.push(...r.tails);
+            unitRows.push({ itemKey: sub[0][0].itemKey || '', nUnits: sub.length, nOps: flat.length, accept: true, gain: r.gain, depth });
+            return;
+          }
+          rt.load(sSvg);
+          if (sub.length === 1) {
+            /* 单个 item 都过不了门 → 按 (策略, item) 记黑名单，本轮不再重复产出。
+             * 必须是二元组：只按 item 记会连带封杀同类问题在该 item 上的其它策略
+             * （实测 real-02 / real-03 各丢一次本会被接受的 resize_container）。 */
+            const o0 = sub[0][0];
+            if (o0.itemTargets !== undefined) {
+              rejectItems.push((o0.gateKey || gateKey) + '|' + o0.itemTargets);
+            }
+            unitRows.push({ itemKey: o0.itemKey || '', nUnits: 1, nOps: flat.length, accept: false, gain: r.gain, reasons: r.reasons, depth });
+            return;
+          }
+          const mid = Math.ceil(sub.length / 2);
+          trySub(sub.slice(0, mid), depth + 1);
+          trySub(sub.slice(mid), depth + 1);
+        };
+        trySub(units, 0);
+
+        if (committed.length) {
+          /* 部分单元存活：DOM 已停在「已提交单元」的状态上，直接重建分析态即可 */
+          ir = IR.build(rt, o.sopt);
+          an = Analyzer.run(ir, o.sopt);
+          committedOps.push(...committed);
+          steps.push(mkRow({ target: committed.map(x => x.label || '').join(' ; '),
+                             nOps: committed.length, nPlanned: batch.length, mode: 'item',
+                             units: unitRows, tail: [],
+                             after: an.score, gain: r2(an.score - preAn.score), accept: true }));
+          continue;
+        }
+        /* 一个单元都没活下来 → 回到 preSvg 并拉黑该 gateKey */
+        rt.load(preSvg);
+        ir = IR.build(rt, o.sopt);
+        an = Analyzer.run(ir, o.sopt);
+        attempts.set(gateKey, (attempts.get(gateKey) || 0) + 1);
         reject.push(gateKey);
+        steps.push(mkRow({ mode: 'item', units: unitRows, tail: whole.tails,
+                           after: failAfter, gain: whole.gain, accept: false, reasons: whole.reasons }));
       }
       const accepted = steps.filter(s => s.accept).length;
       const rejected = steps.length - accepted;
       const applyErrors = steps.filter(s => (s.reasons || []).join('').indexOf('apply 抛错') >= 0)
         .map(s => ({ op: s.target, err: (s.reasons || [])[0] }));
+      const attemptsSnap = {};
+      for (const kv of attempts) attemptsSnap[kv[0]] = kv[1];
 
       const rec = {
         round, strategy: o.strategy, phase: plan0 ? plan0.phase : '-', style: plan0 ? plan0.style : null,
@@ -4629,8 +6499,15 @@ const Pipeline = {
         planDbg: plan0 ? (plan0.dbg || []) : [],
         chosen: dec0 ? Object.keys(dec0.applied).filter(k => k.indexOf('strategy_') === 0)
           .map(k => k.replace('strategy_', '') + '→' + dec0.applied[k].choice) : [],
-        steps, accepted, rejected, rejectedKeys: reject.slice(),
+        steps, accepted, rejected, rejectedKeys: reject.slice(), rejectedItems: rejectItems.slice(),
+        /* ★ F10：rec.ops 的旧语义其实是「本轮首步的**计划**」（含被 opAllow 拒绝、被门淘汰者），
+         * 与「实际生效集」不是一回事。保留 ops 字段名（UI 兼容），同时补上两个语义明确的新字段：
+         *   plannedOps —— 计划集（旧 ops 的真实含义）
+         *   appliedOps —— 真正生效集（来自被接受的 batch / 单元） */
         ops: Patch.record(firstPlan ? firstPlan.ops : [], round),
+        plannedOps: Patch.record(firstPlan ? firstPlan.ops : [], round),
+        appliedOps: Patch.record(committedOps, round),
+        attempts: attemptsSnap,
         skipped: (firstPlan ? firstPlan.skipped : []).map(s => ({ why: s.skipped, strategy: s.strategy, issue: s.issueType, target: s.target || '' })),
         before: roundStart.score, beforeMetrics: roundStart.metrics
       };
@@ -4711,7 +6588,7 @@ const Pipeline = {
       delta: r2(an.score - before.score),
       tailRounds: ledger.filter(l => l.tail && l.tail.n).length,
       tailCanvasGrow: ledger.filter(l => l.tail && l.tail.grow).length,
-      occFixed, occFixedCount: occFixed.length,
+      occFixed, occFixedCount: occFixed.length, occErrors: occOut.errors,
       ledger, finalSvg, beforeSvg,
       ops: lastPlan, dec: lastDec, skipped: lastPlan ? lastPlan.skipped : [],
       ms: r2(nowMs() - t0)
@@ -7644,7 +9521,26 @@ const UI = {
    *      没出现的新 op，宁可让它们照常走原有的守卫/评分门，也不要因为
    *      清单对不上而整体空转。
    * ==================================================================== */
-  opSig(o) { return String(o.strategy || '') + '|' + String(o.label || ''); },
+  opSig(o) {
+    /* ★F10：签名改用**稳定身份**（元素 id + kind + 策略 + 问题类型），不再用 label。
+     * 旧实现 `strategy|label` 有两处相反方向的漏洞：
+     *   ① 冲突（过度合并）：label 相同而元素不同的多个 op 共用一把钥匙 →
+     *      取消其中一个会连带取消其它元素上的改动；
+     *   ② 失配（fail-open 被放大）：label 里带数量/字号等**会随后续重算变化**的描述
+     *      （如「放大 1.37× → 132×54」），预览与应用的 label 一旦不同，
+     *      deny 就匹配不上 → 用户明明取消了，管线却照做。
+     * 换成元素 id 后 ① 的作用域从「全图同策略同 label」收窄到「同一元素」，
+     *   ② 则彻底消除（id 在同一次运行内稳定）。
+     * 残余局限（如实标注）：同一元素上、kind/策略/问题类型都相同的多个 op
+     *   （例如同一次 normalize_style 里对同一文本既改字号又改填充）仍会共用签名。
+     *   彻底解决需要在 claim() 处下发一个显式稳定 opId，属独立改动。
+     * 无元素 id 时退回包含 label —— 宁可对 label 敏感，也不要丢掉区分度。 */
+    if (!o) return '?';
+    const el = (o.target && o.target.nodeType === 1) ? o.target : null;
+    const id = (el && el.id) ? el.id : '';
+    const base = String(o.kind || '') + '|' + String(o.strategy || '') + '|' + String(o.issueType || '');
+    return id ? (id + '|' + base) : (base + '|' + String(o.label || ''));
+  },
 
   opDenySet() {
     const out = [];

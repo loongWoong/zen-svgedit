@@ -78,6 +78,32 @@ const Geo = {
     global_relayout: ['canvas_margin', 'overlap', 'occlusion', 'spacing', 'misalignment', 'text_overflow', 'edge_crossing', 'style_inconsistency', 'tiny_element']
   },
 
+  /* ==================== 提交原子性分级（F1） ====================
+   * 决定「一类的修复动作能否按 item 拆分提交」。07_patch.js 在整批被 op 级门淘汰后
+   * 读这张表：'whole' 维持整批提交（保持既有语义），其余按 item 增量提交。
+   *
+   * 'whole' —— 整类必须一次提交。判据是**组内一致性**：拆开会破坏不变量。
+   *            这些条目的理由在 07_patch.js 与 plan() 的 claim() 注释里都有实测记录
+   *            （整幅平移拆一半 → 留白更不对称；等距分布拆一半 → canvas 归零）。
+   * 'item'  —— 每个 item（= 一组 targets，见 claim() 的 ik()）独立提交，互不影响。
+   * 'cluster'—— 逐对齐簇独立，处理方式与 'item' 相同（保留独立取值是为了台账可读）。
+   *
+   * ★ 未声明的类型一律按 'item'：漏声明时最坏只是多花几次校验；
+   *   若默认 'whole' 则会重演「9 个 item 对、1 个 item 错 → 整类丢弃」的退化。
+   *   失败方向必须选安全的那一侧。 */
+  ATOMIC: {
+    canvas_margin: 'whole',        /* 整幅平移 + 扩画布，拆开必然破坏对称留白 */
+    spacing: 'whole',              /* 等距分布必须整行/整列一起挪（实测拆了 canvas 归零） */
+    edge_crossing: 'whole',        /* 整组重路由，拆开会让新路径互相打架 */
+    misalignment: 'cluster',       /* 逐对齐簇独立 */
+    text_overflow: 'item',         /* 逐容器独立 */
+    style_inconsistency: 'item',   /* 逐节点字号/填充独立 */
+    tiny_element: 'item',          /* 逐元素独立 */
+    overlap: 'item',               /* 逐对独立 */
+    occlusion: 'item'              /* 逐文字独立 */
+  },
+  atomicity(type) { return this.ATOMIC[type] || 'item'; },
+
   /* ==================== 节点可动空间（供多策略共用） ==================== */
   freeSpace(ir, node, minGap) {
     const mg = minGap === undefined ? 10 : minGap;
@@ -145,7 +171,12 @@ const Geo = {
       case 'text_overflow:reduce_font': return this.evReduceFont(ir, issues, st);
       case 'overlap:move_apart': return this.evMoveApart(ir, an, issues);
       case 'overlap:grow_spacing': return this.evGrowSpacing(ir, an, issues, st);
-      case 'overlap:global_relayout': return { score: 30, detail: '整体重排：改动面最大', risky: true };
+      /* ★ F4a：global_relayout 曾是**幽灵策略** —— 在 LABEL/PHASES/evaluate/候选表里都有，
+       * 但 plan() 的 switch 没有对应 case → 落 default → 0 op → 顺位回退到共用 separation()
+       * 的 move_apart / grow_spacing，于是三条候选给出**完全相同的数字**，让 Laya 的 ranks
+       * 与台账都在说谎。候选表里有幻觉比候选少更糟，故先把桩降为「不可用」；
+       * 真正实现区域重排时再连同 6 处注册点一起恢复。 */
+      case 'overlap:global_relayout': return { score: 0, detail: '未实现（已下线，不再参与排序）', risky: true };
       case 'occlusion:nudge_text': return this.evNudgeText(ir, issues, st);
       case 'occlusion:raise_text': return this.evRaiseText(issues);
       case 'misalignment:snap_edges': return this.evSnap(ir, an, 'edges');
@@ -484,7 +515,13 @@ const Geo = {
         : ir.edges.find(x => it.targets.indexOf(x.id) >= 0);
       if (e) edges.add(e);
     }
-    const list = [...edges].slice(0, 6);
+    /* 预检上限：只试前 N 条连线。★F8：上限从 6 提到 12，并且**显式声明截断**
+     * ——旧实现静默忽略第 7 条之后的连线，决策层会误以为已全覆盖。
+     * 上限存在的原因是 routeEdge 是 O(E) 的栅格 A*，预检阶段要控制总开销。 */
+    const REROUTE_PRE = 12;
+    const all = [...edges];
+    const list = all.slice(0, REROUTE_PRE);
+    const trunc = all.length > list.length ? `；另有 ${all.length - list.length} 条未预检（仅取前 ${REROUTE_PRE} 条）` : '';
     let ok = 0, worst = null;
     for (const e of list) {
       const r = this.routeEdge(ir, e);
@@ -494,7 +531,7 @@ const Geo = {
     const n = list.length || 1;
     return {
       score: r2(clamp(100 * ok / n, 0, 100)), risky: ok < n,
-      detail: `${ok}/${n} 条连线找到无穿越正交路径${worst ? '；失败：' + worst : ''}`
+      detail: `${ok}/${n} 条连线找到「零节点穿越且不增加交叉」的正交路径${worst ? '；失败：' + worst : ''}${trunc}`
     };
   },
 
@@ -772,6 +809,15 @@ const Geo = {
       }
       let items = byType[type];
       if (!gate.safeAll) items = items.filter(i => i.priority !== 'critical');
+      /* ★ F1：本轮已按 item 提交失败的 (策略, item) 组合不再产出。
+       * 注意 `key` 在此处**已经定稿**（上面的回退阶梯刚算完），所以组合键里必须带上
+       * 当前策略 —— 只用 item 会让一个策略的失败连带封杀同类问题的其它策略（实测回归）。
+       * 键与 07_patch 的写入端同构：gateKey + '|' + itemTargets。 */
+      if (sopt && sopt.rejectItems && sopt.rejectItems.length) {
+        const gk = type + '|' + (key || '');
+        items = items.filter(i => sopt.rejectItems.indexOf(
+          gk + '|' + (i && i.targets ? i.targets.join(',') : '')) < 0);
+      }
       if (!items.length) continue;
       groups.push({ type, key, items, phase: phase.indexOf(type), src: rec ? rec.source : 'rule' });
     }
@@ -790,6 +836,14 @@ const Geo = {
        *  itemKey —— 仅用于台账展示「这批里包含哪几条 issue」。 */
       op.gateKey = cur.type + '|' + (cur.key || '');
       if (itemKey !== undefined && itemKey !== null) op.itemKey = cur.type + '|' + itemKey;
+      /* ★F1 修正（实测回归后补）：item 级黑名单必须**按策略分域**，因此另存裸目标串。
+       * 只按 item 记账会把「wrap_text 在这个 item 上失败」误推广成「这个 item 在任何
+       * 策略上都无救」，从而连带封杀 resize_container / move_text 等同 item 的其它策略。
+       * 实测代价：real-02 丢掉一次本会被接受的 resize_container#5（72.15 → 68.95），
+       * real-03 丢掉 resize_container#2（69.95 → 69.55）。旧版的 gateKey 黑名单是
+       * 「issue 类型 + 策略」二元键，item 级黑名单必须保持同样的粒度。
+       * 组合键 = gateKey + '|' + itemTargets（见 plan() 里的过滤与 07_patch 的写入）。 */
+      if (itemKey !== undefined && itemKey !== null) op.itemTargets = itemKey;
       if (owner.has(el)) { op.skipped = '该元素本轮已被 ' + owner.get(el) + ' 占用'; skipped.push(op); return false; }
       owner.set(el, op.strategy);
       ops.push(op);
@@ -925,7 +979,17 @@ const Geo = {
             const span = axis === 'x' ? R.right(sorted[sorted.length - 1].geomBox) - sorted[0].geomBox.x
                                       : R.bottom(sorted[sorted.length - 1].geomBox) - sorted[0].geomBox.y;
             const sumW = sorted.reduce((a, n) => a + (axis === 'x' ? n.geomBox.w : n.geomBox.h), 0);
-            const base = g.key === 'distribute_weighted' ? null : (span - sumW) / (sorted.length - 1);
+            /* ★ F4b：grow_spacing 与 move_apart 语义分家。
+             * 旧实现里 grow_spacing 与 move_apart **共用 separation() 同一段代码**
+             * （只换 g.key 与标签），于是两条候选在实测台账里给出逐字相同的数字，
+             * 而 "整体扩间距" 这个名字承诺的是组级行为。这里把它接到组级设施上：
+             * 目标间距取「观测均值」与「风格 gap」的较大者 —— 即"向风格目标拉开"，
+             * 而 distribute_equal 仍是"归一到观测跨度"。出画布保护（见下）与
+             * 最小间距 6px 继续生效，所以"拉开"永远不会把元素扔出画布。 */
+            const observed = (span - sumW) / (sorted.length - 1);
+            const base = g.key === 'distribute_weighted' ? null
+                       : g.key === 'grow_spacing' ? Math.max(observed, st.gap)
+                       : observed;
             let cursor = axis === 'x' ? sorted[0].geomBox.x : sorted[0].geomBox.y;
             const wsum = sorted.reduce((a, n) => a + n.importance, 0);
             for (let i = 0; i < sorted.length; i++) {
@@ -1092,6 +1156,12 @@ const Geo = {
           for (const it of g.items) {
             const n = ir.nodes.find(x => x.id === it.targets[0]);
             if (!n) continue;
+            /* ★F7 双保险：即使 issue 侧误报，几何侧也不放大容器/装饰件。
+             * 放大一个无标签的装饰件或满版容器既无视觉收益，又必然造成碰撞。 */
+            if (n.role && n.role !== 'data' && n.role !== 'label') {
+              skipped.push({ skipped: `该元素是 ${n.role}，不参与尺寸归一`, strategy: g.key, issueType: g.type, target: n.describe });
+              continue;
+            }
             const scale = Math.sqrt(Math.max(1, (ir.medArea * 0.5) / Math.max(1, R.area(n.geomBox))));
             if (scale < 1.05) continue;
             const newW = r2(n.geomBox.w * scale), newH = r2(n.geomBox.h * scale);
@@ -1384,6 +1454,10 @@ const Geo = {
    *      推到 y=448（容器只到 434.5）→「文字超出背景图形」。
    *   ② 不得与同一容器内的**其它标签**重叠 —— 多标签卡片的两个标签各自被吸到容器中心后
    *      会重合（实测 baseline 448 / 443.67 只差 4px）→「文字被遮挡」。
+   *   ③ ★F3：不得落进**其它节点**的容器范围、也不得压到自由文本。护栏②只覆盖
+   *      「同节点兄弟标签」，范围小于缺陷范围：把文字吸到容器中心时，它可能越出
+   *      与邻居的视觉边界（对 textFit / occlusion 两个口径而言就是新缺陷）。
+   *      这一层只做**否决**，不参与位移择优，因此不会改变既有成功案例的位移量。
    * 任一护栏不满足就返回 null（宁可不动）。坐标系换算：`geomBox`/`bbox` 是 world，
    * 写回的 x/y 是元素**本地**属性，需按 CTM 的 x/y 缩放折算。 */
   anchorDelta(ir, n, l) {
@@ -1401,6 +1475,48 @@ const Geo = {
       if (o === l || !o.bbox) continue;
       const inter = R.intersect(after, o.bbox);
       if (inter && inter.w > 1 && inter.h > 1) return null;
+    }
+    /* ★F3 护栏③：跨节点。只查「落进别人容器」与「压住自由文本」两件事 ——
+     * 二者都是明确缺陷；不查与其它节点**标签**的重叠，因为标签在 IR 里不互相排斥，
+     * 那样会把大量合法排版（密集标签图）一刀否决。
+     * 复用 wouldCollide 而不是手写 R.intersect：它的 coverRatio ≥ 0.95 豁免正好放过
+     * 「标签完整落在父容器 / 满版底板内」这一合法情形（coverRatio 按较小面积归一，
+     * 故 label 完全在底板内时比值 = 1）；手写版本会让所有带背景底板的图一条
+     * move_text 都产不出来。口径与 Analyzer.collision 同源（见 wouldCollide 注释）。 */
+    if (ir && ir.nodes && this.wouldCollide(ir, n, after, [n])) return null;
+    /* ★F3 护栏④（依据 tests/diag_batch.cjs 的实测归因追加）：**不得把标签搬到不透明形状之下**。
+     * 上面 ③ 复用 wouldCollide 时继承了它 coverRatio ≥ 0.95 的豁免。那个豁免本意是放过
+     * 「标签完整待在自己父容器 / 满版底板内」这一合法嵌套 —— 但它**同样**放过了
+     * 「标签完整落进另一个不透明、且绘制更晚的容器底下」，而后者恰是 Analyzer.occlusion
+     * 判为缺陷、op 级门必然扣分的形态。于是出现「几何自认为修好了、门禁测出劣化」的错配。
+     * 实测代价：move_text 批次里 opFixAnchor 把 H1 标题整体平移 (697.5, 449.5)px 到画布中心，
+     * 落在 n23/n25（文档序更靠后、不透明）之下 → occlusion 由 0 变 2 →
+     * occlusion.density = 0.5 正好等于 collSat → metrics.collision 从 96 塌到 0
+     * → 整批 10 个 op 被全数否决（这就是「collision 96→0」的直接成因）。
+     * 判据与 Analyzer.occlusion **同源**：不透明、非属主、非背景、文档序在文字之后、
+     * 两维交叠 ≥6px（排除发丝级接触）。
+     * 只否决「**新引入**」的遮挡：若标签当前位置本就被同一形状压着，搬过去仍被压
+     * 不构成新缺陷，不能因此否决 —— 否则所有位于遮挡下的标签都永远修不动。 */
+    if (ir && ir.nodes && l.elem) {
+      const FOLLOWING = 4;
+      for (const m of ir.nodes) {
+        if (m === n || m.isBg) continue;                 /* 与 Analyzer.occlusion 的排除项一致 */
+        if (!normColor(m.fill)) continue;                /* 无填充 / 透明 / 悬空 paint 引用 → 不遮挡 */
+        const ia = R.intersect(after, m.geomBox);
+        if (!ia || ia.w < 6 || ia.h < 6) continue;
+        const ib = R.intersect(l.bbox, m.geomBox);
+        if (ib && ib.w >= 6 && ib.h >= 6) continue;      /* 本来就被压 → 不算新引入 */
+        let later = false;
+        try { later = (l.elem.compareDocumentPosition(m.shapeElem || m.elem) & FOLLOWING) !== 0; } catch (x) {}
+        if (later) return null;
+      }
+    }
+    if (ir && ir.freeTexts) {
+      for (const t of ir.freeTexts) {
+        if (!t || !t.bbox || t.elem === l.elem) continue;
+        const inter = R.intersect(after, t.bbox);
+        if (inter && inter.w > 1 && inter.h > 1) return null;
+      }
     }
     return { dx, dy, dwx: dwx, dwy: dwy, after };
   },
@@ -1524,6 +1640,28 @@ const Geo = {
    * 表现为 collision 维度被自己改坏（实测 96→90 后整轮被守卫回滚）。 */
   separation(ir, p) {
     const a = p.aRef, b = p.bRef;
+    /* ★ 本体规则「位移上限」的几何端（声明在 05b_ontology.js RULES.displace_cap）
+     * 实测病理：`circle#svg_75` 与装饰环 `circle#svg_27` 只重叠 **7.8px**（在 y 轴），
+     * 正确的 y 向小位移因会撞第三个节点而被 `wouldCollide` 过滤掉，于是候选里只剩
+     * 「沿 x 把 a 的右边缘搬到 b 的左边缘」= `1482.8 − 1278 + 10` = **214.8px** —— 27 倍过度修正。
+     * 规则内容：位移必须与**实际重叠量**同量级，d_max = max(K × 重叠量, 画布短边 × frac)；
+     * 全部候选都超限时返回 null（跳过，而不是远距离搬运）。
+     *
+     * ★★ 默认**关闭**（opt-in：ir.opts.ontDisplaceCap === true）。原因见 palantir_value.cjs：
+     *   本函数是**共享**设施（两处调用点：overlap 的推开、以及 reroute 家族的取点），
+     *   在目标文件上开启本上限代价 −4.10 分，且结构不变量反而变差
+     *   （containPx 128→253.71、guideSpreadMax 183→211.83、attachErrMax 36→42.01）——
+     *   因为它挡掉的正是**在被接受、并在修复几何**的那些动作。
+     *   规则本身有据（214.8px 是真实的过度修正），但要生效必须先把调用点拆开、
+     *   逐条定价后再开，不能默认全图收紧。 */
+    const OC = (typeof Ontology !== 'undefined' && Ontology && Ontology.DEF) ? Ontology.DEF : {};
+    const K = typeof OC.displaceK === 'number' ? OC.displaceK : 1.5;
+    const FR = typeof OC.displaceFrac === 'number' ? OC.displaceFrac : 0.06;
+    const capOff = !(ir && ir.opts && ir.opts.ontDisplaceCap === true);
+    const cvW = (ir && ir.canvas && ir.canvas.w) || 1920;
+    const cvH = (ir && ir.canvas && ir.canvas.h) || 1080;
+    const dMax = capOff ? Infinity
+      : Math.max(K * Math.abs(p.depth || 0), FR * Math.min(cvW, cvH));
     const base = (axis, dir) => {
       const v = axis === 'x'
         ? (dir > 0 ? R.right(a.geomBox) - b.geomBox.x + 10 : R.right(b.geomBox) - a.geomBox.x + 10)
@@ -1551,11 +1689,14 @@ const Geo = {
       }
     }
     if (!cands.length) return null;
+    /* ★ 先按位移上限过滤（本体规则），再挑无新碰撞者 */
+    const pool = capOff ? cands : cands.filter(c => c.dist <= dMax + 0.01);
+    if (!pool.length) return null;
     /* ★ 只在「无新碰撞」的候选里挑最小位移。
      * 全部候选都会撞上第三个节点时返回 null —— 几何引擎不主动制造新碰撞，
      * 把它交回决策层换策略（move_apart → grow_spacing → global_relayout）。
      * 曾经的「退而取碰撞最轻的一个」会稳定地把 collision 改坏（实测 96→90 后被守卫否决）。 */
-    const good = cands.filter(c => !c.hit);
+    const good = pool.filter(c => !c.hit);
     if (!good.length) return null;
     good.sort((x, y) => x.dist - y.dist);
     return good[0];
@@ -1599,8 +1740,29 @@ const Geo = {
   },
 
   /* ==================== 正交避障重路由 ==================== */
+  /* ★F8：两条折线之间的交叉段数（无向，按段对计数）。
+   * 口径要点：这里只用于**前后对比**（原路径 vs 新路径），因此共享端点造成的
+   * 冗余计数对两侧同权、会在比较中抵消。不要把它当成绝对交叉数对外报告。 */
+  _crossCount(pts, others) {
+    if (!pts || pts.length < 2) return 0;
+    let n = 0;
+    for (const o of others) {
+      const q = o && o.pts;
+      if (!q || q.length < 2) continue;
+      for (let i = 1; i < pts.length; i++) {
+        for (let j = 1; j < q.length; j++) {
+          if (Seg.cross(pts[i - 1], pts[i], q[j - 1], q[j])) n++;
+        }
+      }
+    }
+    return n;
+  },
+
   routeEdge(ir, e) {
-    const clear = 10, cell = 8;
+    /* ★F8 新增 EDGE_PEN：其它连线所在格子的附加代价。
+     * 取 6 的依据：空格代价 1、转向罚 2.2 —— 6 足以让 A* 宁可多绕几格也不压线，
+     * 但仍是**软惩罚**，不会造成无解（硬阻塞会让连线密集的图大面积退化成 L 形）。 */
+    const clear = 10, cell = 8, EDGE_PEN = 6;
     const src = e.source ? ir.nodes.find(n => n.id === e.source) : null;
     const dst = e.target ? ir.nodes.find(n => n.id === e.target) : null;
     const a = e.pts[0], b = e.pts[e.pts.length - 1];
@@ -1627,6 +1789,52 @@ const Geo = {
       for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) blocked[idx(i, j)] = 1;
       avoided++;
     }
+
+    /* ★F8：把「其它边」也纳入代价。旧实现只把节点当障碍，于是 edge-over-edge
+     * 交叉**永远修不掉**（Analyzer 一直在计 edgeRouting，几何层却看不见）。
+     * 做法是**软惩罚**而非加入 blocked：连线之间本来就近，硬阻塞会让 A* 大面积无解。 */
+    const edgeOcc = new Uint8Array(nx * ny);
+    const others = (ir.edges || []).filter(x => x !== e && x && x.pts && x.pts.length >= 2);
+    for (const e2 of others) {
+      for (let i = 1; i < e2.pts.length; i++) {
+        const p = e2.pts[i - 1], q = e2.pts[i];
+        const steps = Math.max(1, Math.ceil(Math.hypot(q.x - p.x, q.y - p.y) / (cell * 0.5)));
+        for (let s = 0; s <= steps; s++) {
+          const x = p.x + (q.x - p.x) * (s / steps), y = p.y + (q.y - p.y) * (s / steps);
+          edgeOcc[idx(clamp(Math.round(x / cell), 0, nx - 1), clamp(Math.round(y / cell), 0, ny - 1))] = 1;
+        }
+      }
+    }
+
+    /* 原路径基线：用于「绝不更差」判定（节点穿越数 + 边交叉数） */
+    const origCross = this._crossCount(e.pts, others);
+    let origNodeHits = 0;
+    const evalPath = pts => {
+      let nh = 0;
+      for (const n of ir.nodes) { if (skip.has(n.id)) continue; nh += Seg.hitsRect(pts, n.geomBox, 1); }
+      return { nh, nc: this._crossCount(pts, others) };
+    };
+    for (const n of ir.nodes) { if (skip.has(n.id)) continue; origNodeHits += Seg.hitsRect(e.pts, n.geomBox, 1); }
+
+    const lCands = vertical
+      ? [[{ x: S.x, y: S.y }, { x: S.x, y: T.y }, { x: T.x, y: T.y }],
+         [{ x: S.x, y: S.y }, { x: T.x, y: S.y }, { x: T.x, y: T.y }]]
+      : [[{ x: S.x, y: S.y }, { x: T.x, y: S.y }, { x: T.x, y: T.y }],
+         [{ x: S.x, y: S.y }, { x: S.x, y: T.y }, { x: T.x, y: T.y }]];
+    /* L 形兜底：保持原有的「零节点穿越」硬门，另加 F8 的「不增加边交叉」软门 */
+    const tryL = () => {
+      let best = null;
+      for (const c of lCands) {
+        const s = evalPath(c);
+        const sc = s.nh * 1000 + s.nc;
+        if (!best || sc < best.sc) best = { c, sc, s };
+      }
+      if (best && best.s.nh === 0 && best.s.nc <= origCross) {
+        return { pts: Seg.simplifyOrtho(best.c), avoided, fallback: 'L',
+                 nodeHits: 0, edgeCross: best.s.nc, origEdgeCross: origCross };
+      }
+      return null;
+    };
     const toI = p => ({ i: clamp(Math.round(p.x / cell), 0, nx - 1), j: clamp(Math.round(p.y / cell), 0, ny - 1) });
     const s = toI(S), t = toI(T);
     const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -1655,25 +1863,16 @@ const Geo = {
         const ni = i + DIRS[nd][0], nj = j + DIRS[nd][1];
         if (!freeCell(ni, nj)) continue;
         const nk = key(ni, nj, nd);
-        const cost = g0 + 1 + (nd === d ? 0 : 2.2);
+        const cost = g0 + 1 + (nd === d ? 0 : 2.2) + (edgeOcc[idx(ni, nj)] ? EDGE_PEN : 0);
         if (cost < gScore[nk]) { gScore[nk] = cost; prev[nk] = k; push(cost + h(ni, nj), nk); }
       }
     }
     if (found < 0) {
-      /* 退化为 L 形：两个方向都试，取不穿越者 */
-      const cands = vertical
-        ? [[{ x: S.x, y: S.y }, { x: S.x, y: T.y }, { x: T.x, y: T.y }],
-           [{ x: S.x, y: S.y }, { x: T.x, y: S.y }, { x: T.x, y: T.y }]]
-        : [[{ x: S.x, y: S.y }, { x: T.x, y: S.y }, { x: T.x, y: T.y }],
-           [{ x: S.x, y: S.y }, { x: S.x, y: T.y }, { x: T.x, y: T.y }]];
-      let best = null, bestHits = Infinity;
-      for (const c of cands) {
-        let hits = 0;
-        for (const n of ir.nodes) { if (skip.has(n.id)) continue; hits += Seg.hitsRect(c, n.geomBox, 1); }
-        if (hits < bestHits) { bestHits = hits; best = c; }
-      }
-      if (best && bestHits === 0) return { pts: Seg.simplifyOrtho(best), avoided, fallback: 'L' };
-      return { failed: true, avoided, reason: 'A* 与 L 形均未找到无穿越路径' };
+      /* 退化为 L 形：两个方向都试，取「零节点穿越 + 不增加边交叉」者 */
+      const l = tryL();
+      if (l) return l;
+      return { failed: true, avoided, reason: 'A* 与 L 形均未找到「零节点穿越且不增加边交叉」的路径',
+               origNodeHits, origEdgeCross: origCross };
     }
     const cells = [];
     let k = found;
@@ -1689,7 +1888,19 @@ const Geo = {
       if (Math.abs(last.x - T.x) > 0.6 || Math.abs(last.y - T.y) > 0.6) pts.push(T);
       pts = Seg.simplifyOrtho(pts, 0.5);
     }
-    return { pts, avoided, fallback: 'astar' };
+    /* ★F8 接受判据：绝不更差（节点穿越数不增加 且 边交叉数不增加）。
+     * 旧实现**无条件**接受 A* 结果，因此「重路由」有可能反而增加交叉（Analyzer 会扣分，
+     * 而几何层自认为修好了）。这里补上否决权；被否决时先退 L 形，再不行返回 failed
+     * （不发 op）—— 保证「要么更好、要么不动」。 */
+    const as = evalPath(pts);
+    if (as.nh <= origNodeHits && as.nc <= origCross) {
+      return { pts, avoided, fallback: 'astar', nodeHits: as.nh, edgeCross: as.nc, origEdgeCross: origCross };
+    }
+    const l2 = tryL();
+    if (l2) return l2;
+    return { failed: true, avoided,
+             reason: 'A* 路径在「节点穿越 / 边交叉」上不优于原路径，且 L 形不可行',
+             astarNodeHits: as.nh, astarEdgeCross: as.nc, origNodeHits, origEdgeCross: origCross };
   },
 
   /* ==================== DOM 应用原语 ==================== */
